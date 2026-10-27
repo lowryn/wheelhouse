@@ -181,6 +181,12 @@ def upsert_ipod(
     )
 
 
+def is_adopted(db: sqlite3.Connection, serial: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM ipod WHERE serial = ?", (serial,)
+    ).fetchone() is not None
+
+
 def set_last_sync(db: sqlite3.Connection, serial: str, timestamp: int) -> None:
     db.execute(
         "UPDATE ipod SET last_sync = ? WHERE serial = ?",

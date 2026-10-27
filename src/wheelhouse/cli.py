@@ -248,12 +248,12 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         raise SystemExit(1)
 
     db = state_mod.open_state()
-    managed = state_mod.get_managed(db, target.serial)
-    if not managed:
+    if not state_mod.is_adopted(db, target.serial):
         click.echo(
-            "No adopted tracks found — run `wheelhouse adopt` first.", err=True
+            "iPod not adopted — run `wheelhouse adopt` first.", err=True
         )
         raise SystemExit(1)
+    managed = state_mod.get_managed(db, target.serial)
 
     click.echo(f"iPod:  {target.display_name} ({target.serial})")
     click.echo(f"State: {len(managed)} managed tracks")
