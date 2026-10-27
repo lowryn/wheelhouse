@@ -19,6 +19,7 @@ from iPodDB.library import (
     FileDependency,
     IPodLibrary,
     PreparedMedia,
+    SourceFile,
     Track,
     TrackMetadata,
     WriteResources,
@@ -279,22 +280,68 @@ def _commit(
     from iPodDB.sidecars import PlaybackSidecar, is_playback_sidecar
 
     itunes_dir = root / "iPod_Control" / "iTunes"
+    artwork_dir = root / "iPod_Control" / "Artwork"
+
     sidecar_files = [f for f in itunes_dir.iterdir() if is_playback_sidecar(f.name)]
+    sidecars: tuple[PlaybackSidecar, ...] = ()
     if sidecar_files:
         sidecars = tuple(PlaybackSidecar(f.name, f.read_bytes()) for f in sidecar_files)
         lib = lib.with_sidecars(sidecars)
 
-    draft = lib.begin_draft(new_snapshot, delete_omissions=delete_omissions)
-    plan = lib.analyze(draft, wt)
-    if plan.blocked:
-        errors = [i for i in plan.issues if i.severity.value == "error"]
-        raise RuntimeError(f"Library preparation blocked: {errors}")
-    result = lib.prepare(plan, WriteResources(media=media, artwork=artwork, pending_playback_sidecars=False))
+    # Pre-load existing .ithmb files so iOpenPod can append new thumbnails to them
+    source_files: tuple[SourceFile, ...] = ()
+    file_inventory: tuple[FileDependency, ...] | None = None
+    if artwork and artwork_dir.exists():
+        ithmb: list[tuple[FileDependency, bytes]] = []
+        for f in sorted(artwork_dir.iterdir()):
+            if f.suffix == ".ithmb":
+                data = f.read_bytes()
+                ithmb.append((
+                    FileDependency(f"iPod_Control/Artwork/{f.name}", len(data),
+                                   hashlib.sha256(data).hexdigest()),
+                    data,
+                ))
+        if ithmb:
+            source_files = tuple(SourceFile(dep, data) for dep, data in ithmb)
+            file_inventory = tuple(dep for dep, _ in ithmb)
+
+    def _attempt(l: IPodLibrary) -> object:
+        d = l.begin_draft(new_snapshot, delete_omissions=delete_omissions)
+        p = l.analyze(d, wt)
+        if p.blocked:
+            raise RuntimeError(f"Library preparation blocked: {[i for i in p.issues if i.severity.value == 'error']}")
+        return l.prepare(p, WriteResources(
+            media=media, artwork=artwork,
+            files=source_files, file_inventory=file_inventory,
+            pending_playback_sidecars=False,
+        ))
+
+    result = _attempt(lib)
+
+    if result.prepared is None and artwork:
+        # Stale ArtworkDB (e.g. after replacing all tracks) — retry without it
+        if any(e.code == "preparation.cannot_encode" for e in result.issues):
+            lib2 = IPodLibrary.parse((root / "iPod_Control" / "iTunes" / "iTunesDB").read_bytes())
+            if sidecars:
+                lib2 = lib2.with_sidecars(sidecars)
+            result = _attempt(lib2)
+
     if result.prepared is None:
         errors = [i for i in result.issues if i.severity.value == "error"]
         raise RuntimeError(f"Library preparation failed: {errors}")
-    db_path = root / "iPod_Control" / "iTunes" / "iTunesDB"
-    atomic_write(db_path, result.prepared.itunes)
+
+    atomic_write(root / "iPod_Control" / "iTunes" / "iTunesDB", result.prepared.itunes)
+
+    # Write updated artwork files back to the iPod
+    if result.prepared.artwork is not None:
+        artwork_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(artwork_dir / "ArtworkDB", result.prepared.artwork)
+    for pf in result.prepared.artwork_files:
+        dest = root / pf.relative_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        data = pf.data if isinstance(pf.data, bytes) else pf.data.read_at(0, len(pf.data))
+        atomic_write(dest, data)
+
     for f in sidecar_files:
         f.unlink(missing_ok=True)
     from wheelhouse.device import load_library
