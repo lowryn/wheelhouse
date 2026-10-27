@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import csv
+import logging
 import time
 from pathlib import Path
 
 import click
 
 from wheelhouse.device import MountedIPod, find_ipods, identify
+
+logging.getLogger("iPodDB").setLevel(logging.ERROR)
 
 
 def _fmt_bytes(n: int) -> str:
