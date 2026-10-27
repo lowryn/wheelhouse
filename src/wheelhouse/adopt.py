@@ -17,26 +17,36 @@ class MatchResult:
 
 
 def _norm(s: str) -> str:
-    """Lowercase, strip accents, collapse whitespace, keep alnum+space."""
+    """Lowercase, strip accents, collapse whitespace, keep alnum+space.
+
+    & → 'and' before punctuation removal so 'Tom Petty & the Heartbreakers'
+    and 'Tom Petty and the Heartbreakers' produce the same key.
+    """
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower()
+    s = re.sub(r"\s*&\s*", " and ", s)
     s = re.sub(r"[^\w\s]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _duration_close(ipod_ms: int, nd_seconds: float, tolerance_s: int = 2) -> bool:
+def _duration_close(ipod_ms: int, nd_seconds: float, tolerance_s: int = 3) -> bool:
+    # Navidrome reports integer seconds (truncated), so allow 3s to absorb that plus
+    # minor encoder differences
     return abs(ipod_ms / 1000 - nd_seconds) <= tolerance_s
 
 
 def match(ipod_tracks: list[Track], navidrome_songs: list[dict]) -> MatchResult:
     """
-    Primary key:  (album_artist, album, disc, track_number, title) + duration ±2s
-    Fallback key: (artist, title) + duration ±2s, only when unique
+    Primary key:  (album_artist, album, disc, track_number, title) + duration ±3s
+    Fallback key: (artist, title) + duration ±3s, only when unique
+    Stripped key: if title is "X - Y", try (album, disc, track_number, Y) + duration ±3s, only when unique
+                  handles tracks where the artist name was embedded in the title field
     """
     # Build Navidrome lookup indexes
     primary_index: dict[tuple, list[dict]] = {}
     fallback_index: dict[tuple, list[dict]] = {}
+    stripped_index: dict[tuple, list[dict]] = {}
 
     for song in navidrome_songs:
         aa    = _norm(song.get("displayAlbumArtist") or song.get("artist", ""))
@@ -48,6 +58,7 @@ def match(ipod_tracks: list[Track], navidrome_songs: list[dict]) -> MatchResult:
 
         primary_index.setdefault((aa, alb, disc, trk, title), []).append(song)
         fallback_index.setdefault((art, title), []).append(song)
+        stripped_index.setdefault((alb, disc, trk, title), []).append(song)
 
     matched:         list[tuple] = []
     ambiguous:       list[tuple] = []
@@ -76,6 +87,16 @@ def match(ipod_tracks: list[Track], navidrome_songs: list[dict]) -> MatchResult:
                 if _duration_close(t.length_ms, s.get("duration", 0))
             ]
             method = "fallback"
+
+        if not candidates:
+            m = re.match(r"^.+? - (.+)$", t.title or "")
+            if m:
+                sk = (alb, disc, trk, _norm(m.group(1)))
+                candidates = [
+                    s for s in stripped_index.get(sk, [])
+                    if _duration_close(t.length_ms, s.get("duration", 0))
+                ]
+                method = "stripped"
 
         if len(candidates) == 1:
             nd = candidates[0]
