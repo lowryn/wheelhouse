@@ -1085,13 +1085,13 @@ dependencies = [
     { name = "mutagen" },
     { name = "pillow" },
     { name = "pyyaml" },
+    { name = "requests" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-timeout" },
-    { name = "requests" },
 ]
 
 [package.metadata]
@@ -1102,13 +1102,13 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.32" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
-    { name = "requests", specifier = ">=2.32" },
 ]
 
 [[package]]

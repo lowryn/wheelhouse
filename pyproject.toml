@@ -11,6 +11,7 @@ dependencies = [
     "keyring>=25.0",
     "mutagen>=1.47",
     "pillow>=10.0",
+    "requests>=2.32",
 ]
 
 [project.scripts]
@@ -20,7 +21,6 @@ wheelhouse = "wheelhouse.cli:cli"
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
-    "requests>=2.32",
 ]
 
 [tool.pytest.ini_options]

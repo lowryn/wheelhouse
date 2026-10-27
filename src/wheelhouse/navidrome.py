@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 import urllib.parse
-import urllib.request
 from typing import Any
+
+import requests
+
+_SESSION = requests.Session()
+_SESSION.headers["User-Agent"] = "wheelhouse/0.1 (iPod sync)"
 
 
 class NavidromeClient:
@@ -16,26 +19,31 @@ class NavidromeClient:
         self._password = password
         self._client = client
 
-    def _query(self, endpoint: str, **params: Any) -> str:
+    def _params(self, **extra: Any) -> dict[str, str]:
         salt = secrets.token_hex(6)
         token = hashlib.md5((self._password + salt).encode()).hexdigest()
         base: dict[str, str] = {
             "u": self._user, "t": token, "s": salt,
             "v": "1.16.1", "c": self._client, "f": "json",
         }
-        base.update({k: str(v) for k, v in params.items() if v is not None})
-        return f"{self._url}/rest/{endpoint}.view?{urllib.parse.urlencode(base)}"
+        base.update({k: str(v) for k, v in extra.items() if v is not None})
+        return base
+
+    def _url_for(self, endpoint: str, **params: Any) -> str:
+        return f"{self._url}/rest/{endpoint}.view?{urllib.parse.urlencode(self._params(**params))}"
 
     def get(self, endpoint: str, **params: Any) -> dict:
-        with urllib.request.urlopen(self._query(endpoint, **params), timeout=30) as r:
-            body = json.load(r)["subsonic-response"]
+        r = _SESSION.get(self._url_for(endpoint, **params), timeout=30)
+        r.raise_for_status()
+        body = r.json()["subsonic-response"]
         if body.get("status") != "ok":
             raise RuntimeError(f"{endpoint}: {body.get('error')}")
         return body
 
     def raw(self, endpoint: str, **params: Any) -> bytes:
-        with urllib.request.urlopen(self._query(endpoint, **params), timeout=120) as r:
-            return r.read()
+        r = _SESSION.get(self._url_for(endpoint, **params), timeout=120)
+        r.raise_for_status()
+        return r.content
 
     def all_songs(self, page_size: int = 500) -> list[dict]:
         songs: list[dict] = []
