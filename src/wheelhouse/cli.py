@@ -391,7 +391,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
 
     if eject:
         import subprocess
-        subprocess.run(["diskutil", "unmount", str(target.root)], check=True)
+        subprocess.run(["diskutil", "eject", str(target.root)], check=True)
         click.echo(f"Ejected {target.root}")
 
 
