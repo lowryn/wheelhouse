@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS ipod (
     name          TEXT,
     last_seen     INTEGER,
     last_db_sha256 TEXT,
-    last_sync     INTEGER
+    last_sync     INTEGER,
+    last_playlists TEXT
 );
 
 CREATE TABLE IF NOT EXISTS item (
@@ -56,6 +57,7 @@ ALTER TABLE item ADD COLUMN play_count  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE item ADD COLUMN match_method TEXT   NOT NULL DEFAULT '';
 ALTER TABLE item ADD COLUMN adopted_at   INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE ipod ADD COLUMN last_sync   INTEGER;
+ALTER TABLE ipod ADD COLUMN last_playlists TEXT;
 """
 
 
@@ -199,3 +201,22 @@ def get_last_sync(db: sqlite3.Connection, serial: str) -> int | None:
         "SELECT last_sync FROM ipod WHERE serial = ?", (serial,)
     ).fetchone()
     return row["last_sync"] if row else None
+
+
+def set_last_playlists(db: sqlite3.Connection, serial: str, playlists: list[str]) -> None:
+    import json
+    db.execute(
+        "UPDATE ipod SET last_playlists = ? WHERE serial = ?",
+        (json.dumps(playlists), serial),
+    )
+
+
+def get_last_playlists(db: sqlite3.Connection, serial: str) -> list[str] | None:
+    """Returns None if never synced, [] if last sync was 'all music', or a list of names."""
+    import json
+    row = db.execute(
+        "SELECT last_playlists FROM ipod WHERE serial = ?", (serial,)
+    ).fetchone()
+    if row is None or row["last_playlists"] is None:
+        return None
+    return json.loads(row["last_playlists"])

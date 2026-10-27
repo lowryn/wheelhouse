@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import logging
 import time
 from pathlib import Path
@@ -29,7 +30,11 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
-def _print_ipod(ipod: MountedIPod) -> None:
+def _print_ipod(
+    ipod: MountedIPod,
+    last_sync: int | None = None,
+    last_playlists: list[str] | None = None,
+) -> None:
     guid_str = ipod.guid.hex().upper() if ipod.guid else "—"
     hash58_str = (
         "—" if ipod.hash58_valid is None
@@ -45,16 +50,34 @@ def _print_ipod(ipod: MountedIPod) -> None:
     click.echo(f"  DB:       {'OK' if ipod.db_ok else 'MISSING/CORRUPT'}")
     if ipod.hash58_valid is not None:
         click.echo(f"  HASH58:   {hash58_str}")
+    if last_sync is not None:
+        ts = datetime.datetime.fromtimestamp(last_sync).strftime("%-d %b %Y %H:%M")
+        click.echo(f"  Synced:   {ts}")
+    if last_playlists is not None:
+        if last_playlists:
+            click.echo(f"  Playlist: {', '.join(last_playlists)}")
+        else:
+            click.echo("  Playlist: All music")
 
 
-@click.group()
-def cli() -> None:
-    pass
+@click.group(invoke_without_command=True)
+@click.option("--int", "interactive_mode", is_flag=True, default=False,
+              help="Launch interactive guided flow.")
+@click.pass_context
+def cli(ctx: click.Context, interactive_mode: bool) -> None:
+    if interactive_mode:
+        from wheelhouse.interactive import run
+        run()
+        ctx.exit()
+    elif ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 @cli.command()
 def status() -> None:
     """Show all connected iPods: model, serial, GUID, track count, free space."""
+    from wheelhouse import state as state_mod
+
     mounts = find_ipods()
     if not mounts:
         click.echo("No iPods found under /Volumes.")
@@ -68,9 +91,15 @@ def status() -> None:
         except Exception as exc:
             errors.append((str(root), exc))
 
+    db = state_mod.open_state()
     for ipod in found:
         click.echo(f"\n{ipod.display_name}")
-        _print_ipod(ipod)
+        _print_ipod(
+            ipod,
+            last_sync=state_mod.get_last_sync(db, ipod.serial),
+            last_playlists=state_mod.get_last_playlists(db, ipod.serial),
+        )
+    db.close()
 
     for path, exc in errors:
         click.echo(f"\n{path}: ERROR — {exc}", err=True)

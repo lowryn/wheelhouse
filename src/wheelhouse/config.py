@@ -68,6 +68,21 @@ def _parse_music(raw) -> MusicSelection:
     raise ValueError(f"Invalid music selection: {raw!r}")
 
 
+def append_ipod_to_config(
+    name: str, serial: str, music_all: bool, path: Path = DEFAULT_CONFIG_PATH
+) -> None:
+    """Append a new iPod entry to config.yaml."""
+    text = path.read_text()
+    prefix = "" if text.endswith("\n") else "\n"
+    lines = [f"{prefix}  - name: {name}\n", f"    serial: {serial}\n"]
+    if music_all:
+        lines.append("    music: all\n")
+    else:
+        lines.append("    music:\n      playlists: []\n")
+    with open(path, "a") as f:
+        f.writelines(lines)
+
+
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     with open(path) as f:
         data = yaml.safe_load(f)
