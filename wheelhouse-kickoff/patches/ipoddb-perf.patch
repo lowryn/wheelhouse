@@ -1,0 +1,89 @@
+diff --git a/src/iPodDB/library/_playlist_verification.py b/src/iPodDB/library/_playlist_verification.py
+index b4aedae..7046fe2 100644
+--- a/src/iPodDB/library/_playlist_verification.py
++++ b/src/iPodDB/library/_playlist_verification.py
+@@ -377,14 +377,14 @@ def verify_playlists(
+                 expected = tuple(
+                     tracks.get(t.track_id, t.track_id) for t in desired.tracks
+                 )
++                _before_ids = {t.track_id for t in before.tracks}
+                 retained_missing = (
+                     ()
+                     if baseline is None
+                     else tuple(
+                         s.chunk.header.track_id
+                         for s in baseline.find_chunks(MhipHeader)
+-                        if s.chunk.header.track_id
+-                        not in {t.track_id for t in before.tracks}
++                        if s.chunk.header.track_id not in _before_ids
+                     )
+                 )
+                 if tuple(c.header.track_id for c in items) != (
+@@ -397,11 +397,19 @@ def verify_playlists(
+                         kind,
+                         chunk,
+                     )
+-            for child in chunk.children:
+-                retained_index = baseline is not None and any(
+-                    _bytes(child, output_bytes) == _bytes(c, original_bytes)
++            _baseline_children = (
++                set()
++                if baseline is None
++                else {
++                    _bytes(c, original_bytes)
+                     for c in baseline.chunk.children
+                     if not isinstance(c.header, MhipHeader)
++                }
++            )
++            for child in chunk.children:
++                retained_index = (
++                    baseline is not None
++                    and _bytes(child, output_bytes) in _baseline_children
+                 )
+                 if isinstance(
+                     child.payload, MhodLibraryIndexPayload | MhodLibraryJumpTablePayload
+diff --git a/src/iPodDB/library/_write_effects.py b/src/iPodDB/library/_write_effects.py
+index 627fb33..1f34712 100644
+--- a/src/iPodDB/library/_write_effects.py
++++ b/src/iPodDB/library/_write_effects.py
+@@ -129,6 +129,12 @@ def describe_effects(
+         )
+     )
+ 
++    _by_subject: dict[str, list[int]] = {}
++    _by_subject_id: dict[tuple[str, int | None], list[int]] = {}
++    for _i, _c in enumerate(plan.changes):
++        _by_subject.setdefault(_c.subject, []).append(_i)
++        _by_subject_id.setdefault((_c.subject, _c.record_id), []).append(_i)
++
+     def effect(
+         code: str,
+         subject: str,
+@@ -138,9 +144,9 @@ def describe_effects(
+         dataset: int | None = None,
+     ) -> None:
+         causes = tuple(
+-            i
+-            for i, c in enumerate(plan.changes)
+-            if c.subject == subject and (identity is None or c.record_id == identity)
++            _by_subject.get(subject, ())
++            if identity is None
++            else _by_subject_id.get((subject, identity), ())
+         )
+         if code == "artifact.signature":
+             causes = tuple(range(len(plan.changes)))
+diff --git a/src/iPodDB/shared/chunk_writer.py b/src/iPodDB/shared/chunk_writer.py
+index 60e0c3c..7363c50 100644
+--- a/src/iPodDB/shared/chunk_writer.py
++++ b/src/iPodDB/shared/chunk_writer.py
+@@ -220,8 +220,8 @@ def _serialize_chunk_body(
+ 
+     child_indexes = {id(child): index for index, child in enumerate(chunk.children)}
+ 
+-    def serialize_child[H: ChunkHeader](
+-        child: ParsedChunk[H],
++    def serialize_child(
++        child: "ParsedChunk[ChunkHeader]",
+         parent: bytes,
+     ) -> bytes:
+         try:
