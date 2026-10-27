@@ -28,6 +28,28 @@ def test_ipod_initialized_fixture(ipod_root_initialized: tuple) -> None:
     assert lib.snapshot.tracks == ()
 
 
+def test_identify_simulated_ipod(ipod_root: Path) -> None:
+    from wheelhouse.device import identify
+    ipod = identify(ipod_root)
+    assert ipod.model == "MB565"
+    assert "iPod Classic" in ipod.display_name
+    assert ipod.serial == "TESTSYNC001"
+    assert ipod.track_count == 0
+    assert ipod.free_bytes > 0
+    assert not ipod.db_ok          # no iTunesDB written to this fixture
+
+
+def test_identify_initialized_ipod(ipod_root_initialized: tuple) -> None:
+    from wheelhouse.device import identify
+    root, _target, _profile = ipod_root_initialized
+    ipod = identify(root)
+    assert ipod.model == "MB565"
+    assert ipod.db_ok
+    assert ipod.track_count == 0
+    # GUID in fixture is 000A27001A2B3C4D — hash58 check should run
+    assert ipod.hash58_valid is not None
+
+
 def test_navidrome_fixture(navidrome: dict) -> None:
     import hashlib, json, secrets, urllib.parse, urllib.request
     info = navidrome

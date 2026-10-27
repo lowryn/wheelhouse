@@ -119,11 +119,14 @@ def _make_ipod_dirs(root: Path) -> None:
         (root / d).mkdir(parents=True, exist_ok=True)
 
 
+FAKE_GUID = "000A27001A2B3C4D"
+
+
 def _write_sysinfo(root: Path, serial: str, model: str = IPOD_MODEL) -> None:
     sysinfo = root / "iPod_Control/Device/SysInfo"
     sysinfo.write_text(
-        f"ModelNumStr: {model}\nSerialNumber: {serial}\n"
-        f"VisibleBuildID: 0x00020002\n"
+        f"ModelNumStr: {model}\npszSerialNumber: {serial}\n"
+        f"VisibleBuildID: 0x00020002\nFirewireGuid: 0x{FAKE_GUID}\n"
     )
 
 
@@ -151,7 +154,7 @@ def ipod_root_initialized(tmp_path):
     profile = DEFAULT_DEVICE_REGISTRY.profile_for_model_number(IPOD_MODEL)
     assert profile is not None
     caps = profile.capabilities
-    guid = bytes.fromhex("000A27001A2B3C4D")
+    guid = bytes.fromhex(FAKE_GUID)
     target = WriteTarget(
         checksum=WriteChecksum(caps.database.checksum.value),
         database_version=caps.database.binary_version,
