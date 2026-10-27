@@ -401,5 +401,27 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
 @cli.command()
 @click.argument("serial", required=False)
 def eject(serial: str | None) -> None:
-    """Eject an iPod cleanly."""
-    raise NotImplementedError
+    """Eject a connected iPod safely."""
+    import subprocess
+
+    mounts = find_ipods()
+    if not mounts:
+        click.echo("No iPods found.", err=True)
+        raise SystemExit(1)
+
+    ipods = [identify(r) for r in mounts]
+    if serial:
+        target = next((i for i in ipods if i.serial == serial), None)
+        if target is None:
+            click.echo(f"No iPod with serial {serial} found.", err=True)
+            raise SystemExit(1)
+    elif len(ipods) == 1:
+        target = ipods[0]
+    else:
+        click.echo("Multiple iPods connected — specify a serial:", err=True)
+        for i in ipods:
+            click.echo(f"  {i.serial}  {i.display_name}", err=True)
+        raise SystemExit(1)
+
+    subprocess.run(["diskutil", "eject", str(target.root)], check=True)
+    click.echo(f"Ejected {target.display_name} ({target.serial})")
