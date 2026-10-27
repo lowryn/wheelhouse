@@ -521,7 +521,12 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         if art_count:
             click.echo(f"  Updated {art_count} tracks.")
 
-    # ── 5. Finalise ───────────────────────────────────────────────────────
+    # ── 5. Sync notes ────────────────────────────────────────────────────
+    notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
+    if notes_added or notes_removed:
+        click.echo(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
+
+    # ── 6. Finalise ───────────────────────────────────────────────────────
     state_mod.upsert_ipod(
         db, target.serial, ipod_cfg.name, target.model, target.guid,
         int(time.time()),

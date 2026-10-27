@@ -337,7 +337,12 @@ def _do_sync(
         if art_count:
             console.print(f"  Updated {art_count} tracks.")
 
-    # ── 5. Finalise ───────────────────────────────────────────────────────────
+    # ── 5. Sync notes ─────────────────────────────────────────────────────────
+    notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
+    if notes_added or notes_removed:
+        console.print(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
+
+    # ── 6. Finalise ───────────────────────────────────────────────────────────
     state_mod.upsert_ipod(
         db, target.serial, ipod_cfg.name, target.model, target.guid, int(time.time())
     )

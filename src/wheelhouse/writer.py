@@ -26,6 +26,7 @@ from iPodDB.library import (
     WriteResources,
     WriteTarget,
     prepared_audio,
+    prepared_video,
 )
 from iOpenPod.app.media.music_paths import MusicPathAllocator
 
@@ -37,22 +38,24 @@ from wheelhouse.publish import atomic_write
 _SUFFIX_ENCODING: dict[str, AudioEncoding] = {
     "mp3":  AudioEncoding.MP3,
     "m4a":  AudioEncoding.AAC,   # refined to ALAC below when detected
+    "m4b":  AudioEncoding.AAC,   # audiobook container, same codec as m4a
     "aac":  AudioEncoding.AAC,
     "wav":  AudioEncoding.WAV,
     "aiff": AudioEncoding.AIFF,
     "aif":  AudioEncoding.AIFF,
 }
 
+# Video formats handled via prepared_video (not prepared_audio).
+_VIDEO_SUFFIXES = frozenset({"m4v", "mp4", "mov"})
+
 # Formats that need transcoding — not handled in this release.
-SKIP_FORMATS = frozenset({"flac", "ogg", "opus", "wma", "ape", "dsf", "dff", "mp4"})
+SKIP_FORMATS = frozenset({"flac", "ogg", "opus", "wma", "ape", "dsf", "dff"})
 
 _KIND_MEDIA_TYPES: dict[str, tuple[MediaType, ...]] = {
-    "music":       (MediaType.AUDIO,),
     "audiobook":   (MediaType.AUDIOBOOK,),
     "movie":       (MediaType.VIDEO,),
     "tv_show":     (MediaType.TV_SHOW,),
     "music_video": (MediaType.MUSIC_VIDEO,),
-    "note":        (MediaType.AUDIO,),
 }
 
 
@@ -79,7 +82,7 @@ def _detect_encoding(suffix: str, audio_bytes: bytes) -> AudioEncoding | None:
     base = _SUFFIX_ENCODING.get(suffix.lower())
     if base is None:
         return None
-    if base is AudioEncoding.AAC and suffix.lower() == "m4a":
+    if base is AudioEncoding.AAC and suffix.lower() in ("m4a", "m4b"):
         try:
             mf = mutagen.File(io.BytesIO(audio_bytes), filename="x.m4a")
             codec = getattr(getattr(mf, "info", None), "codec", "") or ""
@@ -277,6 +280,43 @@ def remove_tracks(
     return updated
 
 
+def sync_notes(root: Path, drop_folder: Path) -> tuple[int, int]:
+    """Sync text notes from drop_folder/Notes/ to the iPod's /Notes/ folder.
+
+    Returns (added_or_updated, removed) counts.
+    """
+    from wheelhouse.dropfolder import scan_notes
+
+    src_notes = scan_notes(drop_folder)
+    notes_dir = root / "Notes"
+
+    # Find existing notes on iPod
+    dst_notes: dict[str, Path] = {}
+    if notes_dir.exists():
+        dst_notes = {
+            str(f.relative_to(notes_dir)): f
+            for f in sorted(notes_dir.rglob("*"))
+            if f.is_file()
+        }
+
+    added = 0
+    for rel, src in src_notes.items():
+        dst = notes_dir / rel
+        data = src.read_bytes()
+        if not dst.exists() or dst.read_bytes() != data:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)
+            added += 1
+
+    removed = 0
+    for rel, dst in dst_notes.items():
+        if rel not in src_notes:
+            dst.unlink(missing_ok=True)
+            removed += 1
+
+    return added, removed
+
+
 def update_artwork(
     root: Path,
     lib: IPodLibrary,
@@ -349,29 +389,64 @@ def update_artwork(
     return updated_lib, count
 
 
-def _drop_tags(path: Path) -> dict:
-    """Best-effort tag extraction from a local audio file using mutagen easy tags."""
+def _drop_tags(path: Path, kind: str = "music") -> dict:
+    """Extract metadata from embedded tags, falling back to filename + media kind."""
+    tags: dict = {}
     try:
         mf = mutagen.File(str(path), easy=True)
-        if mf is None or mf.tags is None:
-            return {}
-
-        def _first(key: str) -> str:
-            v = mf.tags.get(key, [])
-            return str(v[0]).strip() if v else ""
-
-        return {
-            "title":       _first("title") or path.stem,
-            "artist":      _first("artist"),
-            "album":       _first("album"),
-            "albumartist": _first("albumartist") or _first("album_artist"),
-            "genre":       _first("genre"),
-            "date":        _first("date"),
-            "tracknumber": _first("tracknumber"),
-            "discnumber":  _first("discnumber"),
-        }
+        if mf and mf.tags:
+            def _first(key: str) -> str:
+                v = mf.tags.get(key, [])
+                return str(v[0]).strip() if v else ""
+            tags = {
+                "title":       _first("title"),
+                "artist":      _first("artist"),
+                "album":       _first("album"),
+                "albumartist": _first("albumartist") or _first("album_artist"),
+                "genre":       _first("genre"),
+                "date":        _first("date"),
+                "tracknumber": _first("tracknumber"),
+                "discnumber":  _first("discnumber"),
+            }
     except Exception:
-        return {"title": path.stem}
+        pass
+
+    if tags.get("title"):
+        return tags
+
+    # Untagged — derive from filename and media kind
+    stem = path.stem
+    if " - " in stem:
+        artist, title = (p.strip() for p in stem.split(" - ", 1))
+    else:
+        artist, title = "", stem
+
+    # Kind-specific album/artist defaults
+    if kind == "audiobook":
+        album = title          # book title doubles as album
+        albumartist = artist   # author
+    elif kind == "tv_show":
+        # Parent folder is the show name unless it IS the TV subfolder
+        show = path.parent.name
+        album = show if show.lower() != "tv" else ""
+        albumartist = ""
+    elif kind == "movie":
+        album = ""
+        albumartist = ""
+    else:
+        album = tags.get("album", "")
+        albumartist = artist
+
+    return {
+        "title":       title,
+        "artist":      artist,
+        "album":       album,
+        "albumartist": albumartist,
+        "genre":       "",
+        "date":        "",
+        "tracknumber": "",
+        "discnumber":  "",
+    }
 
 
 def _drop_cover(path: Path) -> bytes | None:
@@ -434,15 +509,21 @@ def add_drop_tracks(
 
             src = drop_folder / item.rel_path
             suffix = src.suffix.lstrip(".").lower()
-            if suffix not in _SUFFIX_ENCODING:
+            is_video = suffix in _VIDEO_SUFFIXES
+            if not is_video and suffix not in _SUFFIX_ENCODING:
                 continue
 
             audio_bytes = src.read_bytes()
-            encoding = _detect_encoding(suffix, audio_bytes)
-            if encoding is None:
-                continue
 
-            length_ms, bitrate, sample_rate, vbr = _audio_facts(audio_bytes, suffix, {})
+            encoding = None
+            if not is_video:
+                encoding = _detect_encoding(suffix, audio_bytes)
+                if encoding is None:
+                    continue
+
+            length_ms, bitrate, sample_rate, vbr = _audio_facts(
+                audio_bytes, "mp4" if is_video else suffix, {}
+            )
             sha256 = hashlib.sha256(audio_bytes).hexdigest()
             size = len(audio_bytes)
 
@@ -451,7 +532,7 @@ def add_drop_tracks(
             track_id = next_id
             next_id += 1
 
-            tags = _drop_tags(src)
+            tags = _drop_tags(src, item.kind)
             title = tags.get("title") or src.stem
             artist = tags.get("artist", "")
             album = tags.get("album", "")
@@ -498,7 +579,8 @@ def add_drop_tracks(
                 artwork_id=artwork_id,
                 media_types=media_types,
                 metadata=TrackMetadata(
-                    file_format=_FORMAT_NAME.get(encoding, "audio file"),
+                    file_format="MPEG-4 video file" if is_video
+                                else _FORMAT_NAME.get(encoding, "audio file"),
                     variable_bitrate=vbr,
                     sample_rate_hz=sample_rate,
                     disc_number=disc_number,
@@ -510,7 +592,10 @@ def add_drop_tracks(
                 ),
             )
             file_dep = FileDependency(location, size, sha256)
-            media_list.append(prepared_audio(track_id, file_dep, encoding))
+            if is_video:
+                media_list.append(prepared_video(track_id, file_dep, has_audio=True))
+            else:
+                media_list.append(prepared_audio(track_id, file_dep, encoding))
 
             dest = root / location
             dest.parent.mkdir(parents=True, exist_ok=True)

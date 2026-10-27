@@ -12,10 +12,11 @@ SUBFOLDER_KIND: dict[str, MediaKind] = {
     "Movies": "movie",
     "TV": "tv_show",
     "Music Videos": "music_video",
-    "Notes": "note",
 }
 
-AUDIO_SUFFIXES = frozenset({"mp3", "m4a", "m4b", "aac", "wav", "aiff", "aif"})
+AUDIO_SUFFIXES = frozenset({"mp3", "m4a", "m4b", "aac", "wav", "aiff", "aif",
+                             "m4v", "mp4", "mov"})
+TEXT_SUFFIXES = frozenset({"txt"})
 
 
 @dataclass
@@ -28,6 +29,18 @@ class DropItem:
     @property
     def source_sig(self) -> str:
         return f"{self.size}:{self.mtime}"
+
+
+def scan_notes(drop_folder: Path) -> dict[str, Path]:
+    """Return {rel_path: abs_path} for all .txt files under drop_folder/Notes/."""
+    notes_root = drop_folder / "Notes"
+    if not notes_root.exists():
+        return {}
+    return {
+        str(f.relative_to(notes_root)): f
+        for f in sorted(notes_root.rglob("*"))
+        if f.is_file() and f.suffix.lstrip(".").lower() in TEXT_SUFFIXES
+    }
 
 
 def scan(drop_folder: Path) -> list[DropItem]:
