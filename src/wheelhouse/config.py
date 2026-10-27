@@ -44,6 +44,8 @@ class IPodConfig:
     serial: str
     music: MusicSelection
     max_tracks: int | None = None
+    model_override: str | None = None   # for flash-modded devices with empty SysInfo
+    guid_override: str | None = None    # hex GUID, e.g. "000A2700129B5AC4"
 
 
 @dataclass
@@ -69,12 +71,21 @@ def _parse_music(raw) -> MusicSelection:
 
 
 def append_ipod_to_config(
-    name: str, serial: str, music_all: bool, path: Path = DEFAULT_CONFIG_PATH
+    name: str,
+    serial: str,
+    music_all: bool,
+    path: Path = DEFAULT_CONFIG_PATH,
+    model_override: str | None = None,
+    guid_override: str | None = None,
 ) -> None:
     """Append a new iPod entry to config.yaml."""
     text = path.read_text()
     prefix = "" if text.endswith("\n") else "\n"
     lines = [f"{prefix}  - name: {name}\n", f"    serial: {serial}\n"]
+    if model_override:
+        lines.append(f"    model: {model_override}\n")
+    if guid_override:
+        lines.append(f"    guid: \"{guid_override}\"\n")
     if music_all:
         lines.append("    music: all\n")
     else:
@@ -95,6 +106,8 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
             serial=raw["serial"],
             music=_parse_music(raw.get("music", "all")),
             max_tracks=raw.get("max_tracks"),
+            model_override=raw.get("model") or None,
+            guid_override=raw.get("guid") or None,
         ))
 
     return Config(

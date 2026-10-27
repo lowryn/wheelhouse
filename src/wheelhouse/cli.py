@@ -17,7 +17,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from wheelhouse.device import MountedIPod, find_ipods, identify
+from wheelhouse.device import MountedIPod, apply_config_overrides, find_ipods, identify
 
 logging.getLogger("iPodDB").setLevel(logging.ERROR)
 
@@ -150,6 +150,8 @@ def adopt(serial: str | None, dry_run: bool, import_playlists: bool,
             f"~/.config/wheelhouse/config.yaml first.", err=True
         )
         raise SystemExit(1)
+
+    target = apply_config_overrides(target, ipod_cfg)
 
     click.echo(f"iPod:   {target.display_name} ({target.serial})")
     click.echo(f"Config: {ipod_cfg.name}")
@@ -286,6 +288,8 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
     if ipod_cfg is None:
         click.echo(f"iPod {target.serial} not in config.", err=True)
         raise SystemExit(1)
+
+    target = apply_config_overrides(target, ipod_cfg)
 
     db = state_mod.open_state()
     if not state_mod.is_adopted(db, target.serial):

@@ -21,25 +21,71 @@ from wheelhouse import state as state_mod
 from wheelhouse import writer
 from wheelhouse import dropfolder as df_mod
 from wheelhouse.config import Config, IPodConfig, append_ipod_to_config, load as load_config
-from wheelhouse.device import MountedIPod, build_write_target, find_ipods, identify, load_library
+from wheelhouse.device import MountedIPod, apply_config_overrides, build_write_target, find_ipods, identify, load_library
 from wheelhouse.navidrome import NavidromeClient
 
 console = Console()
 
 
 def _register_unknown_ipod(ipod: MountedIPod) -> bool:
-    """Prompt for name + music mode and write to config. Returns True on success."""
-    console.print(f"\n[yellow]Unknown iPod:[/yellow] {ipod.display_name} ({ipod.serial})")
+    """Prompt for name + music mode (+ model/GUID for flash-modded devices) and write to config."""
+    is_flash_mod = ipod.serial.startswith("__vol__")
+    console.print(f"\n[yellow]Unknown iPod:[/yellow] {ipod.display_name}")
+    if is_flash_mod:
+        console.print(
+            f"[dim]No SysInfo found — identified by volume name as [bold]{ipod.serial}[/bold][/dim]"
+        )
+
     name = questionary.text("Name for this iPod:").ask()
     if not name:
         return False
+
+    model_override: str | None = None
+    guid_override: str | None = None
+
+    if is_flash_mod or not ipod.model:
+        console.print(
+            "\n[yellow]This device has no firmware identity (flash-mod or wiped SysInfo).[/yellow]"
+        )
+        model_input = questionary.text(
+            "iPod model number (e.g. MC297 for 7th gen Classic, MB565 for 6.5th gen):",
+            validate=lambda v: True if v.strip() else "Required for flash-modded devices",
+        ).ask()
+        if model_input is None:
+            return False
+        model_override = model_input.strip().upper() or None
+
+        # Show auto-detected GUID (if any) and let user confirm or override
+        guid_hex = ipod.guid.hex().upper() if ipod.guid else ""
+        if guid_hex:
+            console.print(f"\n[dim]Auto-detected GUID: [bold]{guid_hex}[/bold][/dim]")
+            use_guid = questionary.confirm("Use this GUID?", default=True).ask()
+            if use_guid:
+                guid_override = guid_hex
+            else:
+                guid_input = questionary.text("Enter GUID (16 hex chars):").ask()
+                guid_override = (guid_input or "").strip().upper() or None
+        else:
+            console.print("\n[yellow]GUID could not be auto-detected.[/yellow]")
+            console.print(
+                "[dim]You can add it manually later as 'guid: \"...\"' in config.yaml[/dim]"
+            )
+            guid_input = questionary.text(
+                "Enter GUID (16 hex chars, or leave blank to add later):"
+            ).ask()
+            guid_override = (guid_input or "").strip().upper() or None
+
     mode = questionary.select(
         "Default music mode:",
         choices=["All music", "Specific playlists (choose each sync)"],
     ).ask()
     if mode is None:
         return False
-    append_ipod_to_config(name, ipod.serial, music_all=(mode == "All music"))
+
+    append_ipod_to_config(
+        name, ipod.serial, music_all=(mode == "All music"),
+        model_override=model_override, guid_override=guid_override,
+    )
     return True
 
 
@@ -106,6 +152,8 @@ def _do_sync(
     Core sync: scrobble → plan → confirm → execute.
     Returns 'done' | 'back' | 'quit'.
     """
+    target = apply_config_overrides(target, ipod_cfg)
+
     db = state_mod.open_state()
     if not state_mod.is_adopted(db, target.serial):
         console.print("[yellow]iPod not adopted — run `wheelhouse adopt` first.[/yellow]")

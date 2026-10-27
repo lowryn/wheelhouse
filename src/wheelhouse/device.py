@@ -1,9 +1,11 @@
 """Find mounted iPods, identify them, read DB and play counts."""
 from __future__ import annotations
 
+import json
 import re
 import shutil
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from device_registry import (
@@ -79,6 +81,46 @@ def _serial_fallback(root: Path) -> str:
     return ""
 
 
+def _guid_from_mac_usb() -> bytes:
+    """Try to read a connected iPod's FireWire GUID from macOS USB device data.
+
+    Only used as a fallback when SysInfo is absent (e.g. flash-modded devices).
+    Returns b"" on any failure.
+    """
+    try:
+        out = subprocess.run(
+            ["system_profiler", "SPUSBDataType", "-json"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if out.returncode != 0:
+            return b""
+        data = json.loads(out.stdout)
+
+        def _walk(node):
+            if isinstance(node, list):
+                for item in node:
+                    yield from _walk(item)
+            elif isinstance(node, dict):
+                name = (node.get("_name") or "").lower()
+                serial = (node.get("serial_num") or "").strip()
+                if "ipod" in name and serial:
+                    yield serial
+                for v in node.values():
+                    yield from _walk(v)
+
+        for serial_str in _walk(data):
+            raw = serial_str.lower().removeprefix("0x")
+            try:
+                b = bytes.fromhex(raw.zfill(16))
+                if len(b) == 8:
+                    return b
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return b""
+
+
 def _guid_bytes(evidence: DeviceEvidence) -> bytes:
     if not evidence.transport_serials:
         return b""
@@ -109,7 +151,12 @@ def identify(root: Path) -> MountedIPod:
         display_name = "Unknown iPod"
 
     serial = _best_value(evidence.product_serials) or _serial_fallback(root)
+    if not serial:
+        serial = f"__vol__{root.name}"
+
     guid = _guid_bytes(evidence)
+    if not guid:
+        guid = _guid_from_mac_usb()
 
     db_path = root / "iPod_Control/iTunes/iTunesDB"
     db_ok = False
@@ -164,6 +211,29 @@ def build_write_target(model: str, guid: bytes) -> tuple[WriteTarget, object]:
         supports_sparse_artwork=caps.artwork.supports_sparse_artwork,
     )
     return target, profile
+
+
+def apply_config_overrides(target: "MountedIPod", ipod_cfg) -> "MountedIPod":
+    """Apply model_override / guid_override from config to a MountedIPod.
+
+    Used for flash-modded devices whose SysInfo is absent or empty.
+    """
+    model = target.model
+    guid = target.guid
+    if ipod_cfg is not None:
+        if not model and ipod_cfg.model_override:
+            model = ipod_cfg.model_override
+        if not guid and ipod_cfg.guid_override:
+            try:
+                raw = ipod_cfg.guid_override.strip().lower().removeprefix("0x")
+                b = bytes.fromhex(raw.zfill(16))
+                if len(b) == 8:
+                    guid = b
+            except (ValueError, AttributeError):
+                pass
+    if model != target.model or guid != target.guid:
+        return replace(target, model=model, guid=guid)
+    return target
 
 
 def load_library(root: Path, write_target: WriteTarget) -> IPodLibrary:
