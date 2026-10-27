@@ -196,6 +196,63 @@ def set_last_sync(db: sqlite3.Connection, serial: str, timestamp: int) -> None:
     )
 
 
+@dataclass
+class DropStateItem:
+    rel_path: str
+    ipod_track_id: int
+    ipod_path: str
+    source_sig: str
+    adopted_at: int
+
+
+def get_drop_managed(db: sqlite3.Connection, serial: str) -> dict[str, DropStateItem]:
+    rows = db.execute(
+        "SELECT source_id, ipod_track_id, ipod_path, source_sig, adopted_at "
+        "FROM item WHERE ipod_serial = ? AND source = 'drop'",
+        (serial,),
+    ).fetchall()
+    return {
+        r["source_id"]: DropStateItem(
+            rel_path=r["source_id"],
+            ipod_track_id=r["ipod_track_id"] or 0,
+            ipod_path=r["ipod_path"] or "",
+            source_sig=r["source_sig"] or "",
+            adopted_at=r["adopted_at"] or 0,
+        )
+        for r in rows
+    }
+
+
+def upsert_drop_item(
+    db: sqlite3.Connection,
+    serial: str,
+    rel_path: str,
+    source_sig: str,
+    ipod_track_id: int,
+    ipod_path: str,
+    adopted_at: int,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO item (ipod_serial, source, source_id, source_sig, ipod_track_id, ipod_path, adopted_at)
+        VALUES (?, 'drop', ?, ?, ?, ?, ?)
+        ON CONFLICT(ipod_serial, source, source_id) DO UPDATE SET
+            source_sig    = excluded.source_sig,
+            ipod_track_id = excluded.ipod_track_id,
+            ipod_path     = excluded.ipod_path,
+            adopted_at    = excluded.adopted_at
+        """,
+        (serial, rel_path, source_sig, ipod_track_id, ipod_path, adopted_at),
+    )
+
+
+def remove_drop_item(db: sqlite3.Connection, serial: str, rel_path: str) -> None:
+    db.execute(
+        "DELETE FROM item WHERE ipod_serial = ? AND source = 'drop' AND source_id = ?",
+        (serial, rel_path),
+    )
+
+
 def get_last_sync(db: sqlite3.Connection, serial: str) -> int | None:
     row = db.execute(
         "SELECT last_sync FROM ipod WHERE serial = ?", (serial,)

@@ -341,6 +341,8 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         by_id = {s["id"]: s for s in all_songs}
         desired_songs = [by_id[i] for i in desired_ids if i in by_id]
 
+    from wheelhouse import dropfolder as df_mod
+
     desired_by_id  = {s["id"]: s for s in desired_songs}
     desired_nd_ids = set(desired_by_id.keys())
     managed_nd_ids = set(managed.keys())
@@ -356,25 +358,41 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
     # Tracks already on iPod that are still desired (will be kept)
     keep_nd_ids = managed_nd_ids & desired_nd_ids
     keep_tids: set[int] = {managed[nd_id].ipod_track_id for nd_id in keep_nd_ids}
-
-    # Everything on iPod not in keep_tids will be removed after adding
     all_current_tids = {t.track_id for t in lib.snapshot.tracks}
-    # (orphan_tids computed after add, once newly-added track_ids are known)
-
-    # Managed tracks no longer desired — remove from state
     managed_to_drop = managed_nd_ids - desired_nd_ids
 
+    # ── Drop folder ───────────────────────────────────────────────────────
+    drop_managed = state_mod.get_drop_managed(db, target.serial)
+    drop_scan = df_mod.scan(cfg.drop_folder) if cfg.drop_folder.exists() else []
+    drop_by_path = {item.rel_path: item for item in drop_scan}
+    drop_to_add = [item for item in drop_scan if item.rel_path not in drop_managed]
+    drop_to_remove = {p for p in drop_managed if p not in drop_by_path}
+    keep_tids.update(
+        drop_managed[p].ipod_track_id for p in drop_managed
+        if p in drop_by_path and drop_managed[p].ipod_track_id > 0
+    )
+
+    # ── Plan display ──────────────────────────────────────────────────────
     click.echo(f"\nDesired:    {len(desired_songs)}")
     click.echo(f"To add:     {len(to_add_ids)}  ({len(unsupported)} unsupported formats skipped)")
     click.echo(f"To remove:  {len(all_current_tids) - len(keep_tids)} "
                f"({len(managed_to_drop)} managed + orphans/unmanaged)")
+    if drop_scan or drop_managed:
+        click.echo(f"Drop:       {len(drop_to_add)} to add, {len(drop_to_remove)} to remove")
+
+    if unsupported:
+        click.echo("\nSkipped (transcoding not yet supported):")
+        for nd_id in sorted(unsupported):
+            s = desired_by_id[nd_id]
+            fmt = (s.get("suffix") or "?").upper()
+            click.echo(f"  [{fmt}] {s.get('artist', '')} — {s.get('title', '')}")
 
     if dry_run:
         click.echo("\n(dry run — no changes written)")
         db.close()
         return
 
-    # ── 1. Add new tracks (download first so failure leaves iPod intact) ──
+    # ── 1. Add Navidrome tracks ───────────────────────────────────────────
     newly_added: list[tuple[str, str]] = []
     if to_add_ids:
         songs_to_add = [desired_by_id[nd_id] for nd_id in sorted(to_add_ids)]
@@ -418,7 +436,47 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
                     adopted_at=added_ts,
                 )
 
-    # ── 2. Remove everything not in keep_tids (managed-unwanted + orphans) ─
+    # ── 2. Add drop folder tracks ─────────────────────────────────────────
+    if drop_to_add:
+        click.echo(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Copying", total=len(drop_to_add))
+
+            def _drop_prog(i: int, name: str) -> None:
+                prog.update(task, completed=i,
+                            description=f"[cyan]{name[:60]}[/cyan]")
+
+            lib, drop_added = writer.add_drop_tracks(
+                target.root, lib, wt, profile, drop_to_add, cfg.drop_folder,
+                on_progress=_drop_prog,
+            )
+            prog.update(task, completed=len(drop_to_add),
+                        description="[green]Done[/green]")
+
+        click.echo(f"  Added {len(drop_added)} tracks.")
+        drop_ts = int(time.time())
+        ipod_by_loc = {t.metadata.location: t for t in lib.snapshot.tracks}
+        for rel_path, ipod_path in drop_added:
+            ipod_track = ipod_by_loc.get(ipod_path)
+            if ipod_track:
+                keep_tids.add(ipod_track.track_id)
+                state_mod.upsert_drop_item(
+                    db, target.serial, rel_path,
+                    source_sig=drop_by_path[rel_path].source_sig,
+                    ipod_track_id=ipod_track.track_id,
+                    ipod_path=ipod_path,
+                    adopted_at=drop_ts,
+                )
+
+    # ── 3. Remove everything not in keep_tids ────────────────────────────
     remove_tids = {t.track_id for t in lib.snapshot.tracks} - keep_tids
     if remove_tids:
         remove_paths = [
@@ -430,9 +488,40 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         lib = writer.remove_tracks(target.root, lib, wt, remove_tids, remove_paths)
         for nd_id in managed_to_drop:
             state_mod.remove_item(db, target.serial, nd_id)
-        click.echo(f"  Done.")
+        for rel_path in drop_to_remove:
+            state_mod.remove_drop_item(db, target.serial, rel_path)
+        click.echo("  Done.")
 
-    # ── 3. Finalise ───────────────────────────────────────────────────────
+    # ── 4. Update artwork for tracks missing it ───────────────────────────
+    managed = state_mod.get_managed(db, target.serial)
+    tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
+    if tracks_no_art and managed:
+        click.echo(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Artwork", total=tracks_no_art)
+
+            def _art_prog(i: int, title: str) -> None:
+                prog.update(task, completed=i,
+                            description=f"[cyan]{title[:60]}[/cyan]")
+
+            lib, art_count = writer.update_artwork(
+                target.root, lib, wt, nd, managed, all_songs,
+                on_progress=_art_prog,
+            )
+            prog.update(task, completed=tracks_no_art,
+                        description="[green]Done[/green]")
+
+        if art_count:
+            click.echo(f"  Updated {art_count} tracks.")
+
+    # ── 5. Finalise ───────────────────────────────────────────────────────
     state_mod.upsert_ipod(
         db, target.serial, ipod_cfg.name, target.model, target.guid,
         int(time.time()),

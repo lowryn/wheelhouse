@@ -19,7 +19,8 @@ from rich.table import Table
 
 from wheelhouse import state as state_mod
 from wheelhouse import writer
-from wheelhouse.config import IPodConfig, append_ipod_to_config, load as load_config
+from wheelhouse import dropfolder as df_mod
+from wheelhouse.config import Config, IPodConfig, append_ipod_to_config, load as load_config
 from wheelhouse.device import MountedIPod, build_write_target, find_ipods, identify, load_library
 from wheelhouse.navidrome import NavidromeClient
 
@@ -50,28 +51,36 @@ def _ipod_label(ipod: MountedIPod, cfg) -> str:
 
 def _select_playlists(nd: NavidromeClient, last_playlists: list[str] | None) -> list[str] | None | bool:
     """
-    Multi-select playlists from Navidrome.
+    Ask whether to sync all music or specific playlists.
     Returns:
-      None            — "All music" chosen
-      list[str]       — specific playlist names chosen
-      False           — user went back / cancelled
+      None        — "All music" chosen
+      list[str]   — specific playlist names chosen
+      False       — user went back / cancelled
     """
+    all_was_last = last_playlists is None or last_playlists == []
+
+    top = questionary.select(
+        "Music to sync:",
+        choices=[
+            questionary.Choice("All music", value="all"),
+            questionary.Choice("Select playlists…", value="playlists"),
+            questionary.Choice("Back", value="back"),
+        ],
+        default="all" if all_was_last else "playlists",
+    ).ask()
+
+    if top is None or top == "back":
+        return False
+    if top == "all":
+        return None
+
+    # Specific playlists
     console.print("Fetching playlists…", end=" ")
     all_pls = sorted(nd.playlists(), key=lambda p: p["name"])
     console.print(f"{len(all_pls)} playlists")
 
-    ALL_MUSIC = "— All music —"
-
-    # Pre-check logic:
-    #   last_playlists is None  → never synced → pre-check "All music"
-    #   last_playlists is []    → "all music" was last used → pre-check "All music"
-    #   last_playlists is [..] → specific playlists used → pre-check those
-    all_was_last = last_playlists is None or last_playlists == []
-    hint = ""
-    if last_playlists:
-        hint = f" (last: {', '.join(last_playlists)})"
-
-    choices = [questionary.Choice(ALL_MUSIC, checked=all_was_last)] + [
+    hint = f" (last: {', '.join(last_playlists)})" if last_playlists else ""
+    choices = [
         questionary.Choice(pl["name"], checked=(pl["name"] in (last_playlists or [])))
         for pl in all_pls
     ]
@@ -81,10 +90,6 @@ def _select_playlists(nd: NavidromeClient, last_playlists: list[str] | None) -> 
         choices=choices,
     ).ask()
 
-    if selected is None:
-        return False
-    if ALL_MUSIC in selected:
-        return None
     if not selected:
         return False
     return selected
@@ -93,6 +98,7 @@ def _select_playlists(nd: NavidromeClient, last_playlists: list[str] | None) -> 
 def _do_sync(
     target: MountedIPod,
     ipod_cfg: IPodConfig,
+    cfg: Config,
     nd: NavidromeClient,
     selected_playlists: list[str] | None,
 ) -> str:
@@ -164,23 +170,44 @@ def _do_sync(
     all_current_tids = {t.track_id for t in lib.snapshot.tracks}
     managed_to_drop = managed_nd_ids - desired_nd_ids
 
-    t = Table.grid(padding=(0, 2))
-    t.add_column(style="dim")
-    t.add_column()
-    t.add_row("Desired", str(len(desired_songs)))
-    t.add_row(
+    # ── Drop folder ───────────────────────────────────────────────────────────
+    drop_managed = state_mod.get_drop_managed(db, target.serial)
+    drop_scan = df_mod.scan(cfg.drop_folder) if cfg.drop_folder.exists() else []
+    drop_by_path = {item.rel_path: item for item in drop_scan}
+    drop_to_add = [item for item in drop_scan if item.rel_path not in drop_managed]
+    drop_to_remove = {p for p in drop_managed if p not in drop_by_path}
+    keep_tids.update(
+        drop_managed[p].ipod_track_id for p in drop_managed
+        if p in drop_by_path and drop_managed[p].ipod_track_id > 0
+    )
+
+    # ── Plan table ────────────────────────────────────────────────────────────
+    tbl = Table.grid(padding=(0, 2))
+    tbl.add_column(style="dim")
+    tbl.add_column()
+    tbl.add_row("Desired", str(len(desired_songs)))
+    tbl.add_row(
         "To add",
         f"{len(to_add_ids)}"
         + (f"  [dim]({len(unsupported)} unsupported skipped)[/dim]" if unsupported else ""),
     )
-    t.add_row(
+    tbl.add_row(
         "To remove",
         f"{len(all_current_tids) - len(keep_tids)}"
-        + (f"  [dim]({len(managed_to_drop)} managed + orphans)[/dim]"
-           if managed_to_drop else ""),
+        + (f"  [dim]({len(managed_to_drop)} managed + orphans)[/dim]" if managed_to_drop else ""),
     )
+    if drop_scan or drop_managed:
+        tbl.add_row("Drop", f"{len(drop_to_add)} to add, {len(drop_to_remove)} to remove")
     console.print()
-    console.print(t)
+    console.print(tbl)
+
+    if unsupported:
+        console.print("\n[dim]Skipped (transcoding not yet supported):[/dim]")
+        for nd_id in sorted(unsupported):
+            s = desired_by_id[nd_id]
+            fmt = (s.get("suffix") or "?").upper()
+            console.print(f"  [dim][{fmt}] {s.get('artist', '')} — {s.get('title', '')}[/dim]")
+
     console.print()
 
     # ── Confirm ───────────────────────────────────────────────────────────────
@@ -196,7 +223,7 @@ def _do_sync(
         db.close()
         return "back"
 
-    # ── Add tracks ────────────────────────────────────────────────────────────
+    # ── 1. Add Navidrome tracks ───────────────────────────────────────────────
     newly_added: list[tuple[str, str]] = []
     if to_add_ids:
         songs_to_add = [desired_by_id[nd_id] for nd_id in sorted(to_add_ids)]
@@ -204,10 +231,7 @@ def _do_sync(
 
         with Progress(
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
+            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
             transient=True,
         ) as prog:
             task = prog.add_task("Downloading", total=len(songs_to_add))
@@ -238,7 +262,42 @@ def _do_sync(
                     adopted_at=added_ts,
                 )
 
-    # ── Remove tracks ─────────────────────────────────────────────────────────
+    # ── 2. Add drop folder tracks ─────────────────────────────────────────────
+    if drop_to_add:
+        console.print(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Copying", total=len(drop_to_add))
+
+            def _drop_prog(i: int, name: str) -> None:
+                prog.update(task, completed=i, description=f"[cyan]{name[:60]}[/cyan]")
+
+            lib, drop_added = writer.add_drop_tracks(
+                target.root, lib, wt, profile, drop_to_add, cfg.drop_folder,
+                on_progress=_drop_prog,
+            )
+            prog.update(task, completed=len(drop_to_add), description="[green]Done[/green]")
+
+        console.print(f"  Added {len(drop_added)} tracks.")
+        drop_ts = int(time.time())
+        ipod_by_loc = {t.metadata.location: t for t in lib.snapshot.tracks}
+        for rel_path, ipod_path in drop_added:
+            ipod_track = ipod_by_loc.get(ipod_path)
+            if ipod_track:
+                keep_tids.add(ipod_track.track_id)
+                state_mod.upsert_drop_item(
+                    db, target.serial, rel_path,
+                    source_sig=drop_by_path[rel_path].source_sig,
+                    ipod_track_id=ipod_track.track_id,
+                    ipod_path=ipod_path,
+                    adopted_at=drop_ts,
+                )
+
+    # ── 3. Remove tracks ──────────────────────────────────────────────────────
     remove_tids = {t.track_id for t in lib.snapshot.tracks} - keep_tids
     if remove_tids:
         remove_paths = [
@@ -250,9 +309,35 @@ def _do_sync(
         lib = writer.remove_tracks(target.root, lib, wt, remove_tids, remove_paths)
         for nd_id in managed_to_drop:
             state_mod.remove_item(db, target.serial, nd_id)
+        for rel_path in drop_to_remove:
+            state_mod.remove_drop_item(db, target.serial, rel_path)
         console.print("  Done.")
 
-    # ── Finalise ──────────────────────────────────────────────────────────────
+    # ── 4. Update artwork for tracks missing it ───────────────────────────────
+    managed = state_mod.get_managed(db, target.serial)
+    tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
+    if tracks_no_art and managed:
+        console.print(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Artwork", total=tracks_no_art)
+
+            def _art_prog(i: int, title: str) -> None:
+                prog.update(task, completed=i, description=f"[cyan]{title[:60]}[/cyan]")
+
+            lib, art_count = writer.update_artwork(
+                target.root, lib, wt, nd, managed, all_songs,
+                on_progress=_art_prog,
+            )
+            prog.update(task, completed=tracks_no_art, description="[green]Done[/green]")
+
+        if art_count:
+            console.print(f"  Updated {art_count} tracks.")
+
+    # ── 5. Finalise ───────────────────────────────────────────────────────────
     state_mod.upsert_ipod(
         db, target.serial, ipod_cfg.name, target.model, target.guid, int(time.time())
     )
@@ -375,7 +460,7 @@ def run() -> None:
                     if selected is False:
                         break  # back to action menu
 
-                    result = _do_sync(target, ipod_cfg, nd, selected)
+                    result = _do_sync(target, ipod_cfg, cfg, nd, selected)
                     if result == "quit":
                         return
                     if result == "back":

@@ -18,6 +18,7 @@ from iPodDB.library import (
     ArtworkPixels,
     FileDependency,
     IPodLibrary,
+    MediaType,
     PreparedMedia,
     SourceFile,
     Track,
@@ -44,6 +45,15 @@ _SUFFIX_ENCODING: dict[str, AudioEncoding] = {
 
 # Formats that need transcoding — not handled in this release.
 SKIP_FORMATS = frozenset({"flac", "ogg", "opus", "wma", "ape", "dsf", "dff", "mp4"})
+
+_KIND_MEDIA_TYPES: dict[str, tuple[MediaType, ...]] = {
+    "music":       (MediaType.AUDIO,),
+    "audiobook":   (MediaType.AUDIOBOOK,),
+    "movie":       (MediaType.VIDEO,),
+    "tv_show":     (MediaType.TV_SHOW,),
+    "music_video": (MediaType.MUSIC_VIDEO,),
+    "note":        (MediaType.AUDIO,),
+}
 
 
 def ipod_title(song: dict) -> str:
@@ -265,6 +275,263 @@ def remove_tracks(
         if p:
             (root / p).unlink(missing_ok=True)
     return updated
+
+
+def update_artwork(
+    root: Path,
+    lib: IPodLibrary,
+    wt: WriteTarget,
+    nd: NavidromeClient,
+    managed: dict,
+    all_songs: list[dict],
+    *,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> tuple[IPodLibrary, int]:
+    """Fetch and attach cover art for managed tracks that currently have none.
+
+    Returns (updated_library, count_updated).
+    """
+    songs_by_id = {s["id"]: s for s in all_songs}
+    tid_to_nd: dict[int, str] = {
+        item.ipod_track_id: nd_id for nd_id, item in managed.items()
+    }
+
+    tracks_needing = [t for t in lib.snapshot.tracks
+                      if t.artwork_id == 0 and t.track_id in tid_to_nd]
+    if not tracks_needing:
+        return lib, 0
+
+    next_art_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
+    cover_id_to_art: dict[str, int] = {}
+    artwork_assets: list[ArtworkAsset] = []
+    updated = list(lib.snapshot.tracks)
+    idx_by_tid = {t.track_id: i for i, t in enumerate(updated)}
+    count = 0
+
+    for i, track in enumerate(tracks_needing):
+        if on_progress:
+            on_progress(i, track.title)
+
+        nd_id = tid_to_nd[track.track_id]
+        song = songs_by_id.get(nd_id)
+        if not song:
+            continue
+        cover_id = song.get("coverArt")
+        if not cover_id:
+            continue
+
+        if cover_id not in cover_id_to_art:
+            try:
+                art_bytes = nd.cover_art(cover_id, size=600)
+                img = Image.open(io.BytesIO(art_bytes)).convert("RGB")
+                w, h = img.size
+                pixels = ArtworkPixels(w, h, img.tobytes())
+                cover_id_to_art[cover_id] = next_art_id
+                artwork_assets.append(ArtworkAsset(next_art_id, pixels))
+                next_art_id += 1
+            except Exception:
+                cover_id_to_art[cover_id] = 0
+
+        art_id = cover_id_to_art[cover_id]
+        if art_id == 0:
+            continue
+
+        idx = idx_by_tid[track.track_id]
+        updated[idx] = replace(updated[idx], artwork_id=art_id)
+        count += 1
+
+    if not artwork_assets:
+        return lib, 0
+
+    new_snapshot = replace(lib.snapshot, tracks=tuple(updated))
+    updated_lib = _commit(root, lib, wt, new_snapshot, (), False,
+                          artwork=tuple(artwork_assets))
+    return updated_lib, count
+
+
+def _drop_tags(path: Path) -> dict:
+    """Best-effort tag extraction from a local audio file using mutagen easy tags."""
+    try:
+        mf = mutagen.File(str(path), easy=True)
+        if mf is None or mf.tags is None:
+            return {}
+
+        def _first(key: str) -> str:
+            v = mf.tags.get(key, [])
+            return str(v[0]).strip() if v else ""
+
+        return {
+            "title":       _first("title") or path.stem,
+            "artist":      _first("artist"),
+            "album":       _first("album"),
+            "albumartist": _first("albumartist") or _first("album_artist"),
+            "genre":       _first("genre"),
+            "date":        _first("date"),
+            "tracknumber": _first("tracknumber"),
+            "discnumber":  _first("discnumber"),
+        }
+    except Exception:
+        return {"title": path.stem}
+
+
+def _drop_cover(path: Path) -> bytes | None:
+    """Extract embedded cover art or find a folder image alongside the file."""
+    try:
+        mf = mutagen.File(str(path))
+        if mf and mf.tags:
+            for key in list(mf.tags.keys()):
+                if isinstance(key, str) and key.startswith("APIC"):
+                    return mf.tags[key].data
+            covr = mf.tags.get("covr")
+            if covr:
+                return bytes(covr[0])
+    except Exception:
+        pass
+    for name in ("cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "Folder.jpg"):
+        for d in (path.parent, path.parent.parent):
+            f = d / name
+            if f.exists():
+                try:
+                    return f.read_bytes()
+                except Exception:
+                    pass
+    return None
+
+
+def add_drop_tracks(
+    root: Path,
+    lib: IPodLibrary,
+    wt: WriteTarget,
+    profile: object,
+    items: list,
+    drop_folder: Path,
+    *,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> tuple[IPodLibrary, list[tuple[str, str]]]:
+    """Copy drop-folder items onto the iPod and update the iTunes database.
+
+    Returns (updated_library, [(rel_path, ipod_path), ...]).
+    """
+    occupied = [t.metadata.location for t in lib.snapshot.tracks if t.metadata.location]
+    allocator = MusicPathAllocator(
+        profile.capabilities.database.music_directory_count, occupied
+    )
+    next_id = max((t.track_id for t in lib.snapshot.tracks), default=0) + 1
+    next_artwork_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
+
+    new_tracks = list(lib.snapshot.tracks)
+    media_list: list[PreparedMedia] = []
+    artwork_assets: list[ArtworkAsset] = []
+    added: list[tuple[str, str]] = []
+    files_written: list[Path] = []
+    cover_key_to_art: dict[str, int] = {}
+
+    try:
+        for i, item in enumerate(items):
+            name = item.rel_path.rsplit("/", 1)[-1]
+            if on_progress:
+                on_progress(i, name)
+
+            src = drop_folder / item.rel_path
+            suffix = src.suffix.lstrip(".").lower()
+            if suffix not in _SUFFIX_ENCODING:
+                continue
+
+            audio_bytes = src.read_bytes()
+            encoding = _detect_encoding(suffix, audio_bytes)
+            if encoding is None:
+                continue
+
+            length_ms, bitrate, sample_rate, vbr = _audio_facts(audio_bytes, suffix, {})
+            sha256 = hashlib.sha256(audio_bytes).hexdigest()
+            size = len(audio_bytes)
+
+            ext = "aif" if suffix == "aiff" else suffix
+            location = allocator.allocate(ext)
+            track_id = next_id
+            next_id += 1
+
+            tags = _drop_tags(src)
+            title = tags.get("title") or src.stem
+            artist = tags.get("artist", "")
+            album = tags.get("album", "")
+            album_artist = tags.get("albumartist", "") or artist
+            genre = tags.get("genre", "")
+            year = int((tags.get("date") or "")[:4] or 0)
+            track_number = int((tags.get("tracknumber") or "").split("/")[0] or 0)
+            disc_number = int((tags.get("discnumber") or "").split("/")[0] or 0)
+            compilation = bool(album_artist and artist and artist != album_artist)
+
+            media_types = _KIND_MEDIA_TYPES.get(item.kind, (MediaType.AUDIO,))
+            remember_position = item.kind in ("audiobook", "podcast")
+            podcast_flag = item.kind == "podcast"
+
+            cover_key = str(src.parent)
+            if cover_key not in cover_key_to_art:
+                art_bytes = _drop_cover(src)
+                if art_bytes:
+                    try:
+                        img = Image.open(io.BytesIO(art_bytes)).convert("RGB")
+                        w, h = img.size
+                        pixels = ArtworkPixels(w, h, img.tobytes())
+                        cover_key_to_art[cover_key] = next_artwork_id
+                        artwork_assets.append(ArtworkAsset(next_artwork_id, pixels))
+                        next_artwork_id += 1
+                    except Exception:
+                        cover_key_to_art[cover_key] = 0
+                else:
+                    cover_key_to_art[cover_key] = 0
+            artwork_id = cover_key_to_art[cover_key]
+
+            track = Track(
+                track_id=track_id,
+                title=title,
+                artist=artist,
+                album=album,
+                album_artist=album_artist,
+                length_ms=length_ms,
+                genre=genre,
+                year=year,
+                track_number=track_number,
+                size_bytes=size,
+                bitrate_kbps=bitrate,
+                artwork_id=artwork_id,
+                media_types=media_types,
+                metadata=TrackMetadata(
+                    file_format=_FORMAT_NAME.get(encoding, "audio file"),
+                    variable_bitrate=vbr,
+                    sample_rate_hz=sample_rate,
+                    disc_number=disc_number,
+                    date_added=int(time.time()),
+                    location=location,
+                    compilation=compilation,
+                    remember_position=remember_position,
+                    podcast=podcast_flag,
+                ),
+            )
+            file_dep = FileDependency(location, size, sha256)
+            media_list.append(prepared_audio(track_id, file_dep, encoding))
+
+            dest = root / location
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(audio_bytes)
+            files_written.append(dest)
+
+            new_tracks.append(track)
+            added.append((item.rel_path, location))
+
+        if not added:
+            return lib, []
+
+        new_snapshot = replace(lib.snapshot, tracks=tuple(new_tracks))
+        updated = _commit(root, lib, wt, new_snapshot, tuple(media_list), False,
+                          artwork=tuple(artwork_assets))
+        return updated, added
+
+    except Exception:
+        for f in files_written:
+            f.unlink(missing_ok=True)
+        raise
 
 
 def _commit(
