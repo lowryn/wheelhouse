@@ -167,12 +167,22 @@ def build_write_target(model: str, guid: bytes) -> tuple[WriteTarget, object]:
 
 
 def load_library(root: Path, write_target: WriteTarget) -> IPodLibrary:
+    from iPodDB.sidecars import PlaybackSidecar, is_playback_sidecar
+
     db_path = root / "iPod_Control/iTunes/iTunesDB"
     art_path = root / "iPod_Control/Artwork/ArtworkDB"
     if db_path.exists():
         lib = IPodLibrary.parse(db_path.read_bytes())
         if art_path.exists():
             lib = lib.with_artwork(art_path.read_bytes())
+        itunes_dir = root / "iPod_Control/iTunes"
+        sidecars = tuple(
+            PlaybackSidecar(f.name, f.read_bytes())
+            for f in itunes_dir.iterdir()
+            if is_playback_sidecar(f.name)
+        )
+        if sidecars:
+            lib = lib.with_sidecars(sidecars)
         return lib
     result = create_empty_library("iPod", write_target, supports_podcasts=True)
     assert result.prepared is not None, result.issues

@@ -10,9 +10,12 @@ from typing import Callable
 
 import mutagen
 from mutagen.mp3 import BitrateMode
+from PIL import Image
 
 from iPodDB.library import (
     AudioEncoding,
+    ArtworkAsset,
+    ArtworkPixels,
     FileDependency,
     IPodLibrary,
     PreparedMedia,
@@ -128,11 +131,14 @@ def add_tracks(
         profile.capabilities.database.music_directory_count, occupied
     )
     next_id = max((t.track_id for t in lib.snapshot.tracks), default=0) + 1
+    next_artwork_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
 
     new_tracks = list(lib.snapshot.tracks)
     media_list: list[PreparedMedia] = []
+    artwork_assets: list[ArtworkAsset] = []
     added: list[tuple[str, str]] = []
     files_written: list[Path] = []
+    cover_id_to_artwork_id: dict[str, int] = {}
 
     try:
         for i, song in enumerate(songs):
@@ -168,6 +174,22 @@ def add_tracks(
                 and song.get("artist", "") != album_artist
             )
 
+            artwork_id = 0
+            cover_id = song.get("coverArt")
+            if cover_id:
+                if cover_id not in cover_id_to_artwork_id:
+                    try:
+                        art_bytes = nd.cover_art(cover_id, size=600)
+                        img = Image.open(io.BytesIO(art_bytes)).convert("RGB")
+                        w, h = img.size
+                        pixels = ArtworkPixels(w, h, img.tobytes())
+                        cover_id_to_artwork_id[cover_id] = next_artwork_id
+                        artwork_assets.append(ArtworkAsset(next_artwork_id, pixels))
+                        next_artwork_id += 1
+                    except Exception:
+                        cover_id_to_artwork_id[cover_id] = 0
+                artwork_id = cover_id_to_artwork_id[cover_id]
+
             track = Track(
                 track_id=track_id,
                 title=ipod_title(song),
@@ -180,6 +202,7 @@ def add_tracks(
                 track_number=int(song.get("track", 0) or 0),
                 size_bytes=size,
                 bitrate_kbps=bitrate,
+                artwork_id=artwork_id,
                 metadata=TrackMetadata(
                     file_format=_FORMAT_NAME.get(encoding, "audio file"),
                     variable_bitrate=vbr,
@@ -205,7 +228,8 @@ def add_tracks(
             return lib, []
 
         new_snapshot = replace(lib.snapshot, tracks=tuple(new_tracks))
-        updated = _commit(root, lib, wt, new_snapshot, tuple(media_list), False)
+        updated = _commit(root, lib, wt, new_snapshot, tuple(media_list), False,
+                          artwork=tuple(artwork_assets))
         return updated, added
 
     except Exception:
@@ -249,6 +273,8 @@ def _commit(
     new_snapshot: object,
     media: tuple[PreparedMedia, ...],
     delete_omissions: bool,
+    *,
+    artwork: tuple[ArtworkAsset, ...] = (),
 ) -> IPodLibrary:
     from iPodDB.sidecars import PlaybackSidecar, is_playback_sidecar
 
@@ -263,7 +289,7 @@ def _commit(
     if plan.blocked:
         errors = [i for i in plan.issues if i.severity.value == "error"]
         raise RuntimeError(f"Library preparation blocked: {errors}")
-    result = lib.prepare(plan, WriteResources(media=media, pending_playback_sidecars=False))
+    result = lib.prepare(plan, WriteResources(media=media, artwork=artwork, pending_playback_sidecars=False))
     if result.prepared is None:
         errors = [i for i in result.issues if i.severity.value == "error"]
         raise RuntimeError(f"Library preparation failed: {errors}")
