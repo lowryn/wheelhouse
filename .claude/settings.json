@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync *)",
+      "Bash(uv add *)",
+      "Bash(uv run pytest *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ],
+    "ask": [
+      "Bash(uv run wheelhouse sync *)",
+      "Bash(uv run wheelhouse adopt *)",
+      "Bash(diskutil *)",
+      "Edit(//Volumes/**)"
+    ]
+  }
+}
