@@ -119,7 +119,7 @@ def add_tracks(
     nd: NavidromeClient,
     songs: list[dict],
     *,
-    on_progress: Callable[[int, int, str], None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
 ) -> tuple[IPodLibrary, list[tuple[str, str]]]:
     """Download *songs* from Navidrome, copy to iPod, update iTunes database.
 
@@ -144,7 +144,7 @@ def add_tracks(
     try:
         for i, song in enumerate(songs):
             if on_progress:
-                on_progress(i, len(songs), song.get("title", ""))
+                on_progress(i, song.get("title", ""))
 
             suffix = (song.get("suffix") or "mp3").lower()
             if suffix in SKIP_FORMATS:

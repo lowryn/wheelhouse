@@ -7,6 +7,14 @@ import time
 from pathlib import Path
 
 import click
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from wheelhouse.device import MountedIPod, find_ipods, identify
 
@@ -343,14 +351,27 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         songs_to_add = [desired_by_id[nd_id] for nd_id in sorted(to_add_ids)]
         click.echo(f"\nDownloading {len(songs_to_add)} tracks…")
 
-        def _progress(i: int, total: int, title: str) -> None:
-            if i % 25 == 0 or i == total - 1:
-                click.echo(f"  [{i + 1}/{total}] {title[:70]}")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Downloading", total=len(songs_to_add))
 
-        lib, newly_added = writer.add_tracks(
-            target.root, lib, wt, profile, nd, songs_to_add,
-            on_progress=_progress,
-        )
+            def _progress(i: int, title: str) -> None:
+                prog.update(task, completed=i,
+                            description=f"[cyan]{title[:60]}[/cyan]")
+
+            lib, newly_added = writer.add_tracks(
+                target.root, lib, wt, profile, nd, songs_to_add,
+                on_progress=_progress,
+            )
+            prog.update(task, completed=len(songs_to_add),
+                        description="[green]Done[/green]")
+
         click.echo(f"  Added {len(newly_added)} tracks.")
 
         added_ts = int(time.time())
