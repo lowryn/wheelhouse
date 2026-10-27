@@ -186,7 +186,7 @@ def _do_sync(
     # ── Confirm ───────────────────────────────────────────────────────────────
     plan_action = questionary.select(
         "Action:",
-        choices=["Sync", "Dry-run", "Back", "Quit"],
+        choices=["Sync", "Back", "Quit"],
     ).ask()
 
     if plan_action is None or plan_action == "Quit":
@@ -195,11 +195,6 @@ def _do_sync(
     if plan_action == "Back":
         db.close()
         return "back"
-
-    if plan_action == "Dry-run":
-        console.print("\n[dim](dry run — no changes written)[/dim]")
-        db.close()
-        return "done"
 
     # ── Add tracks ────────────────────────────────────────────────────────────
     newly_added: list[tuple[str, str]] = []
