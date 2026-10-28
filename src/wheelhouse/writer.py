@@ -747,9 +747,11 @@ def _commit(
     result = _attempt(lib)
 
     if result.prepared is None and artwork:
-        # Stale ArtworkDB (e.g. after replacing all tracks) — retry without it
+        # Stale ArtworkDB (e.g. after replacing all tracks) — retry without it.
+        # On a fresh iPod iTunesDB may not yet exist on disk; reuse the in-memory lib.
         if any(e.code == "preparation.cannot_encode" for e in result.issues):
-            lib2 = IPodLibrary.parse((root / "iPod_Control" / "iTunes" / "iTunesDB").read_bytes())
+            db_on_disk = root / "iPod_Control" / "iTunes" / "iTunesDB"
+            lib2 = IPodLibrary.parse(db_on_disk.read_bytes()) if db_on_disk.exists() else lib
             if sidecars:
                 lib2 = lib2.with_sidecars(sidecars)
             result = _attempt(lib2)
