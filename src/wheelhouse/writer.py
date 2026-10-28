@@ -716,9 +716,11 @@ def _commit(
         sidecars = tuple(PlaybackSidecar(f.name, f.read_bytes()) for f in sidecar_files)
         lib = lib.with_sidecars(sidecars)
 
-    # Pre-load existing .ithmb files so iOpenPod can append new thumbnails to them
+    # Pre-load existing .ithmb files so iOpenPod can append new thumbnails to them.
+    # file_inventory must be () (not None) when writing artwork — None means
+    # "not captured", which the library rejects. An empty tuple means "fresh start".
     source_files: tuple[SourceFile, ...] = ()
-    file_inventory: tuple[FileDependency, ...] | None = None
+    file_inventory: tuple[FileDependency, ...] | None = () if artwork else None
     if artwork and artwork_dir.exists():
         ithmb: list[tuple[FileDependency, bytes]] = []
         for f in sorted(artwork_dir.iterdir()):
