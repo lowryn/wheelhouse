@@ -221,10 +221,20 @@ def add_tracks(
                         cover_id_to_artwork_id[cover_id] = 0
                 artwork_id = cover_id_to_artwork_id[cover_id]
 
+            # On non-VA albums use album_artist as the iPod track artist so Cover Flow
+            # groups all tracks together. The original track artist is embedded in
+            # the title by ipod_title() when it differs from the album artist.
+            track_artist = song.get("artist", "")
+            ipod_artist = (
+                album_artist
+                if album_artist and not compilation and track_artist != album_artist
+                else track_artist
+            )
+
             track = Track(
                 track_id=track_id,
                 title=ipod_title(song),
-                artist=song.get("artist", ""),
+                artist=ipod_artist,
                 album=song.get("album", ""),
                 album_artist=album_artist,
                 length_ms=length_ms,
@@ -378,6 +388,56 @@ def fix_compilation_flags(
 
     new_tracks = tuple(
         replace(t, metadata=replace(t.metadata, compilation=False))
+        if t.track_id in fixed_ids else t
+        for t in lib.snapshot.tracks
+    )
+    new_snapshot = replace(lib.snapshot, tracks=new_tracks)
+    updated = _commit(root, lib, wt, new_snapshot, (), False)
+    return updated, len(fixed_ids)
+
+
+def fix_track_artists(
+    root: Path,
+    lib: IPodLibrary,
+    wt: WriteTarget,
+    desired_songs: list[dict],
+    managed: dict,
+) -> tuple[IPodLibrary, int]:
+    """Correct artist field on non-VA featured-artist tracks.
+
+    On classic iPods Cover Flow groups by the track artist field, not album_artist.
+    Tracks where artist != album_artist on a non-VA album appear under the wrong
+    artist. Fix by setting artist=album_artist; the title already has the original
+    track artist embedded via ipod_title().
+
+    Returns (updated_library, count_fixed).
+    """
+    nd_by_id = {s["id"]: s for s in desired_songs}
+    tid_to_correct: dict[int, str] = {}
+    for nd_id, item in managed.items():
+        song = nd_by_id.get(nd_id)
+        if not song or not item.ipod_track_id:
+            continue
+        aa = (
+            song.get("albumArtist")
+            or song.get("displayAlbumArtist")
+            or song.get("artist", "")
+        )
+        ta = song.get("artist", "")
+        if aa and ta != aa and aa.lower() not in _VA_NAMES:
+            tid_to_correct[item.ipod_track_id] = aa
+
+    fixed_ids: set[int] = set()
+    for t in lib.snapshot.tracks:
+        correct = tid_to_correct.get(t.track_id)
+        if correct and t.artist != correct:
+            fixed_ids.add(t.track_id)
+
+    if not fixed_ids:
+        return lib, 0
+
+    new_tracks = tuple(
+        replace(t, artist=tid_to_correct[t.track_id])
         if t.track_id in fixed_ids else t
         for t in lib.snapshot.tracks
     )

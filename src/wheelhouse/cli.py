@@ -586,12 +586,15 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
             state_mod.remove_drop_item(db, target.serial, rel_path)
         click.echo("  Done.")
 
-    # ── 4. Fix compilation flags incorrectly set on non-VA tracks ────────
+    # ── 4. Fix metadata on tracks written before current conventions ────
     lib, fix_count = writer.fix_compilation_flags(
         target.root, lib, wt, desired_songs, managed
     )
-    if fix_count:
-        click.echo(f"\nFixed compilation flags on {fix_count} tracks.")
+    lib, artist_fix_count = writer.fix_track_artists(
+        target.root, lib, wt, desired_songs, managed
+    )
+    if fix_count or artist_fix_count:
+        click.echo(f"\nFixed metadata: {fix_count} compilation flags, {artist_fix_count} track artists.")
 
     # ── 5. Update artwork for tracks missing it ───────────────────────────
     managed = state_mod.get_managed(db, target.serial)
