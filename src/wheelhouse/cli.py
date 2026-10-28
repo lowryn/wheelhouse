@@ -1,7 +1,6 @@
 """CLI entry point: wheelhouse status | adopt | sync | eject."""
 from __future__ import annotations
 
-import csv
 import datetime
 import logging
 import time
@@ -110,17 +109,13 @@ def status() -> None:
 
 @cli.command()
 @click.option("--dry-run", is_flag=True, default=False)
-@click.option("--import-playlists", is_flag=True, default=False)
-@click.option("--reencode", is_flag=True, default=False)
 @click.option("--csv-out", type=click.Path(), default=None,
               help="Write match report to this CSV file (default: adopt-<serial>.csv)")
 @click.argument("serial", required=False)
-def adopt(serial: str | None, dry_run: bool, import_playlists: bool,
-          reencode: bool, csv_out: str | None) -> None:
+def adopt(serial: str | None, dry_run: bool, csv_out: str | None) -> None:
     """Match an existing iPod's tracks to Navidrome and record them as managed."""
-    from wheelhouse.adopt import match
+    from wheelhouse import adopt as adopt_mod
     from wheelhouse.config import load
-    from wheelhouse.device import load_library, build_write_target
     from wheelhouse.navidrome import NavidromeClient
 
     cfg = load()
@@ -129,7 +124,6 @@ def adopt(serial: str | None, dry_run: bool, import_playlists: bool,
         click.echo("No iPods found.", err=True)
         raise SystemExit(1)
 
-    # Pick the right mount
     ipods = [identify(r) for r in mounts]
     if serial:
         target = next((i for i in ipods if i.serial == serial), None)
@@ -152,103 +146,36 @@ def adopt(serial: str | None, dry_run: bool, import_playlists: bool,
         )
         raise SystemExit(1)
 
-    target = apply_config_overrides(target, ipod_cfg)
-
     click.echo(f"iPod:   {target.display_name} ({target.serial})")
     click.echo(f"Config: {ipod_cfg.name}")
 
-    # Load iPod library
-    wt, _profile = build_write_target(target.model, target.guid)
-    lib = load_library(target.root, wt)
-    ipod_tracks = list(lib.snapshot.tracks)
-    click.echo(f"Tracks on iPod: {len(ipod_tracks)}")
-
-    # Fetch Navidrome songs
     nd = NavidromeClient(cfg.navidrome.url, cfg.navidrome.user, cfg.navidrome.password())
     click.echo("Fetching Navidrome library…", nl=False)
-    all_songs = nd.all_songs()
-    click.echo(f" {len(all_songs)} songs")
+    plan = adopt_mod.plan(target, ipod_cfg, nd)
+    click.echo(f" {len(plan.all_songs)} songs")
 
-    # Determine desired set for this iPod
-    if ipod_cfg.music.mode == "all":
-        desired_songs = all_songs
-    else:
-        desired_ids: set[str] = set()
-        for pl in nd.playlists():
-            if ipod_cfg.music.matches_playlist(pl["name"]):
-                for entry in nd.playlist_songs(pl["id"]):
-                    desired_ids.add(entry["id"])
-        by_id = {s["id"]: s for s in all_songs}
-        desired_songs = [by_id[i] for i in desired_ids if i in by_id]
+    click.echo(f"Tracks on iPod: {len(plan.ipod_tracks)}")
+    click.echo(f"Desired from Navidrome: {len(plan.desired_songs)} songs")
 
-    click.echo(f"Desired from Navidrome: {len(desired_songs)} songs")
-
-    result = match(ipod_tracks, desired_songs)
-
-    # Summary
     click.echo(f"\nMatch results:")
-    click.echo(f"  Matched:           {len(result.matched)}")
-    click.echo(f"  Ambiguous:         {len(result.ambiguous)}")
-    click.echo(f"  Unmatched on iPod: {len(result.unmatched_ipod)}")
-    click.echo(f"  Missing from iPod: {len(result.missing_from_ipod)}")
+    click.echo(f"  Matched:           {len(plan.result.matched)}")
+    click.echo(f"  Ambiguous:         {len(plan.result.ambiguous)}")
+    click.echo(f"  Unmatched on iPod: {len(plan.result.unmatched_ipod)}")
+    click.echo(f"  Missing from iPod: {len(plan.result.missing_from_ipod)}")
 
-    by_id = {s["id"]: s for s in all_songs}
-
-    # Write CSV report
-    out_path = Path(csv_out) if csv_out else Path(f"adopt-{target.serial}.csv")
-    ipod_by_id = {t.track_id: t for t in ipod_tracks}
-    with open(out_path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["status", "method", "ipod_track_id", "ipod_title", "ipod_artist",
-                    "ipod_album", "nd_id", "nd_title", "nd_artist", "nd_album", "ipod_path"])
-        for (tid, nd_id, path, method) in result.matched:
-            t = ipod_by_id[tid]
-            s = by_id.get(nd_id, {})
-            w.writerow(["matched", method, tid, t.title, t.artist, t.album,
-                        nd_id, s.get("title",""), s.get("artist",""), s.get("album",""), path])
-        for (tid, title, cands) in result.ambiguous:
-            t = ipod_by_id[tid]
-            w.writerow(["ambiguous", "", tid, t.title, t.artist, t.album,
-                        "|".join(cands), "", "", "", t.metadata.location])
-        for tid in result.unmatched_ipod:
-            t = ipod_by_id[tid]
-            w.writerow(["unmatched_ipod", "", tid, t.title, t.artist, t.album,
-                        "", "", "", "", t.metadata.location])
-        for nd_id in result.missing_from_ipod:
-            s = by_id.get(nd_id, {})
-            w.writerow(["missing_from_ipod", "", "", "", "", "",
-                        nd_id, s.get("title",""), s.get("artist",""), s.get("album",""), ""])
-
+    out_path = Path(csv_out) if csv_out else Path(f"adopt-{plan.target.serial}.csv")
+    adopt_mod.write_csv(plan, out_path)
     click.echo(f"\nReport written to {out_path}")
 
     if dry_run:
         click.echo("(dry run — nothing written to iPod or state)")
         return
 
-    # Persist matched tracks to state
-    from wheelhouse import state as state_mod
-    db = state_mod.open_state()
-    state_mod.upsert_ipod(
-        db, target.serial, ipod_cfg.name, target.model, target.guid,
-        int(time.time()),
-    )
-    now = int(time.time())
-    for (tid, nd_id, path, method) in result.matched:
-        t = ipod_by_id[tid]
-        state_mod.upsert_item(
-            db, target.serial, nd_id,
-            ipod_track_id=tid,
-            ipod_path=path or "",
-            play_count=t.play_count,
-            match_method=method,
-            adopted_at=now,
-        )
-    db.commit()
-    db.close()
-    click.echo(f"State saved: {len(result.matched)} tracks managed.")
-    if result.missing_from_ipod:
+    saved = adopt_mod.save(plan, ipod_cfg)
+    click.echo(f"State saved: {saved} tracks managed.")
+    if plan.result.missing_from_ipod:
         click.echo(
-            f"{len(result.missing_from_ipod)} Navidrome tracks not on iPod — "
+            f"{len(plan.result.missing_from_ipod)} Navidrome tracks not on iPod — "
             "run `wheelhouse sync` to download them."
         )
 
@@ -587,14 +514,11 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         click.echo("  Done.")
 
     # ── 4. Fix metadata on tracks written before current conventions ────
-    lib, fix_count = writer.fix_compilation_flags(
+    lib, comp_fixes, artist_fixes = writer.fix_track_metadata(
         target.root, lib, wt, desired_songs, managed
     )
-    lib, artist_fix_count = writer.fix_track_artists(
-        target.root, lib, wt, desired_songs, managed
-    )
-    if fix_count or artist_fix_count:
-        click.echo(f"\nFixed metadata: {fix_count} compilation flags, {artist_fix_count} track artists.")
+    if comp_fixes or artist_fixes:
+        click.echo(f"\nFixed metadata: {comp_fixes} compilation flags, {artist_fixes} track artists.")
 
     # ── 5. Update artwork for tracks missing it ───────────────────────────
     managed = state_mod.get_managed(db, target.serial)

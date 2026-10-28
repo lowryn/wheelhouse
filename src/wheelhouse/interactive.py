@@ -426,14 +426,11 @@ def _do_sync(
         console.print("  Done.")
 
     # ── 4. Fix metadata on tracks written before current conventions ────────
-    lib, fix_count = writer.fix_compilation_flags(
+    lib, comp_fixes, artist_fixes = writer.fix_track_metadata(
         target.root, lib, wt, desired_songs, managed
     )
-    lib, artist_fix_count = writer.fix_track_artists(
-        target.root, lib, wt, desired_songs, managed
-    )
-    if fix_count or artist_fix_count:
-        console.print(f"\nFixed metadata: {fix_count} compilation flags, {artist_fix_count} track artists.")
+    if comp_fixes or artist_fixes:
+        console.print(f"\nFixed metadata: {comp_fixes} compilation flags, {artist_fixes} track artists.")
 
     # ── 5. Update artwork for tracks missing it ───────────────────────────────
     managed = state_mod.get_managed(db, target.serial)
@@ -494,68 +491,30 @@ def _do_adopt(
     cfg: Config,
     nd: NavidromeClient,
 ) -> None:
-    from wheelhouse.adopt import match
-
-    target = apply_config_overrides(target, ipod_cfg)
-    wt, _profile = build_write_target(target.model, target.guid)
-    lib = load_library(target.root, wt)
-    ipod_tracks = list(lib.snapshot.tracks)
-    console.print(f"Tracks on iPod: {len(ipod_tracks)}")
+    from wheelhouse import adopt as adopt_mod
 
     console.print("Fetching Navidrome library…", end=" ")
-    all_songs = nd.all_songs()
-    console.print(f"{len(all_songs)} songs")
+    plan = adopt_mod.plan(target, ipod_cfg, nd)
+    console.print(f"{len(plan.all_songs)} songs")
 
-    if ipod_cfg.music.mode == "all":
-        desired_songs = all_songs
-    else:
-        desired_ids: set[str] = set()
-        pl_by_name = {pl["name"]: pl for pl in nd.playlists()}
-        for pl in nd.playlists():
-            if ipod_cfg.music.matches_playlist(pl["name"]):
-                for entry in nd.playlist_songs(pl["id"]):
-                    desired_ids.add(entry["id"])
-        by_id_map = {s["id"]: s for s in all_songs}
-        desired_songs = [by_id_map[i] for i in desired_ids if i in by_id_map]
-
-    console.print(f"Desired from Navidrome: {len(desired_songs)} songs")
-    console.print("Matching…", end=" ")
-    result = match(ipod_tracks, desired_songs)
-    console.print("done")
-
-    console.print(f"\nMatched:           {len(result.matched)}")
-    console.print(f"Ambiguous:         {len(result.ambiguous)}")
-    console.print(f"Unmatched on iPod: {len(result.unmatched_ipod)}")
-    console.print(f"Missing from iPod: {len(result.missing_from_ipod)}")
+    console.print(f"Tracks on iPod: {len(plan.ipod_tracks)}")
+    console.print(f"Desired from Navidrome: {len(plan.desired_songs)} songs")
+    console.print(f"\nMatched:           {len(plan.result.matched)}")
+    console.print(f"Ambiguous:         {len(plan.result.ambiguous)}")
+    console.print(f"Unmatched on iPod: {len(plan.result.unmatched_ipod)}")
+    console.print(f"Missing from iPod: {len(plan.result.missing_from_ipod)}")
 
     ok = questionary.confirm(
-        f"Save {len(result.matched)} matched tracks to state?", default=True
+        f"Save {len(plan.result.matched)} matched tracks to state?", default=True
     ).ask()
     if not ok:
         return
 
-    db = state_mod.open_state()
-    state_mod.upsert_ipod(
-        db, target.serial, ipod_cfg.name, target.model, target.guid, int(time.time())
-    )
-    now = int(time.time())
-    ipod_by_id = {t.track_id: t for t in ipod_tracks}
-    for (tid, nd_id, path, method) in result.matched:
-        t = ipod_by_id[tid]
-        state_mod.upsert_item(
-            db, target.serial, nd_id,
-            ipod_track_id=tid,
-            ipod_path=path or "",
-            play_count=t.play_count,
-            match_method=method,
-            adopted_at=now,
-        )
-    db.commit()
-    db.close()
-    console.print(f"[green]Adopted: {len(result.matched)} tracks managed.[/green]")
-    if result.missing_from_ipod:
+    saved = adopt_mod.save(plan, ipod_cfg)
+    console.print(f"[green]Adopted: {saved} tracks managed.[/green]")
+    if plan.result.missing_from_ipod:
         console.print(
-            f"[dim]{len(result.missing_from_ipod)} Navidrome tracks not on iPod — sync to download.[/dim]"
+            f"[dim]{len(plan.result.missing_from_ipod)} Navidrome tracks not on iPod — sync to download.[/dim]"
         )
 
 

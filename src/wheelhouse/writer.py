@@ -51,6 +51,11 @@ _VIDEO_SUFFIXES = frozenset({"m4v", "mp4", "mov"})
 # Formats that need transcoding — not handled in this release.
 SKIP_FORMATS = frozenset({"flac", "ogg", "opus", "wma", "ape", "dsf", "dff"})
 
+# Album-artist values that mark a track as a true Various-Artists compilation.
+# Non-VA albums with featured guest artists are not compilations even when the
+# track artist differs from the album artist.
+_VA_NAMES = frozenset({"various artists", "various", "va", "v.a.", "v/a"})
+
 _KIND_MEDIA_TYPES: dict[str, tuple[MediaType, ...]] = {
     "audiobook":   (MediaType.AUDIOBOOK,),
     "movie":       (MediaType.VIDEO,),
@@ -202,8 +207,7 @@ def add_tracks(
                 or song.get("displayAlbumArtist")
                 or song.get("artist", "")
             )
-            _VA = {"various artists", "various", "va", "v.a.", "v/a"}
-            compilation = album_artist.lower() in _VA if album_artist else False
+            compilation = album_artist.lower() in _VA_NAMES if album_artist else False
 
             artwork_id = 0
             cover_id = song.get("coverArt")
@@ -344,76 +348,30 @@ def sync_notes(root: Path, drop_folder: Path) -> tuple[int, int]:
     return added, removed
 
 
-_VA_NAMES = {"various artists", "various", "va", "v.a.", "v/a"}
-
-
-def fix_compilation_flags(
+def fix_track_metadata(
     root: Path,
     lib: IPodLibrary,
     wt: WriteTarget,
     desired_songs: list[dict],
     managed: dict,
-) -> tuple[IPodLibrary, int]:
-    """Clear compilation=True on tracks that don't belong to a VA album.
+) -> tuple[IPodLibrary, int, int]:
+    """Correct compilation flag and track artist on wheelhouse-managed tracks.
 
-    Uses the managed state (ipod_track_id → Navidrome song) to find tracks
-    where compilation was incorrectly set. Only non-VA albums are corrected.
+    Two corrections are applied in a single iTunesDB commit:
 
-    Returns (updated_library, count_fixed).
+    1. Clear ``compilation=True`` on tracks that don't belong to a VA album.
+    2. Set ``artist = album_artist`` on non-VA featured-artist tracks whose
+       current ``artist`` still matches the Navidrome track artist (i.e. the
+       value wheelhouse originally wrote). Tracks whose artist was manually
+       curated to something else (e.g. after adoption from iTunes) are left
+       untouched. The original track artist is already in the title via
+       ``ipod_title()``.
+
+    Returns ``(updated_library, compilation_fix_count, artist_fix_count)``.
     """
     nd_by_id = {s["id"]: s for s in desired_songs}
-    tid_to_nd: dict[int, dict] = {}
-    for nd_id, item in managed.items():
-        song = nd_by_id.get(nd_id)
-        if song and item.ipod_track_id:
-            tid_to_nd[item.ipod_track_id] = song
-
-    fixed_ids: set[int] = set()
-    for t in lib.snapshot.tracks:
-        if not t.metadata.compilation:
-            continue
-        nd_song = tid_to_nd.get(t.track_id)
-        if nd_song is None:
-            continue
-        aa = (
-            nd_song.get("albumArtist")
-            or nd_song.get("displayAlbumArtist")
-            or nd_song.get("artist", "")
-        )
-        if aa.lower() not in _VA_NAMES:
-            fixed_ids.add(t.track_id)
-
-    if not fixed_ids:
-        return lib, 0
-
-    new_tracks = tuple(
-        replace(t, metadata=replace(t.metadata, compilation=False))
-        if t.track_id in fixed_ids else t
-        for t in lib.snapshot.tracks
-    )
-    new_snapshot = replace(lib.snapshot, tracks=new_tracks)
-    updated = _commit(root, lib, wt, new_snapshot, (), False)
-    return updated, len(fixed_ids)
-
-
-def fix_track_artists(
-    root: Path,
-    lib: IPodLibrary,
-    wt: WriteTarget,
-    desired_songs: list[dict],
-    managed: dict,
-) -> tuple[IPodLibrary, int]:
-    """Correct artist field on non-VA featured-artist tracks.
-
-    On classic iPods Cover Flow groups by the track artist field, not album_artist.
-    Tracks where artist != album_artist on a non-VA album appear under the wrong
-    artist. Fix by setting artist=album_artist; the title already has the original
-    track artist embedded via ipod_title().
-
-    Returns (updated_library, count_fixed).
-    """
-    nd_by_id = {s["id"]: s for s in desired_songs}
-    tid_to_correct: dict[int, str] = {}
+    # ipod_track_id → (correct_album_artist, navidrome_track_artist, is_va)
+    tid_to_meta: dict[int, tuple[str, str, bool]] = {}
     for nd_id, item in managed.items():
         song = nd_by_id.get(nd_id)
         if not song or not item.ipod_track_id:
@@ -424,26 +382,45 @@ def fix_track_artists(
             or song.get("artist", "")
         )
         ta = song.get("artist", "")
-        if aa and ta != aa and aa.lower() not in _VA_NAMES:
-            tid_to_correct[item.ipod_track_id] = aa
+        is_va = bool(aa) and aa.lower() in _VA_NAMES
+        tid_to_meta[item.ipod_track_id] = (aa, ta, is_va)
 
-    fixed_ids: set[int] = set()
+    comp_fix_ids: set[int] = set()
+    artist_fix_ids: set[int] = set()
     for t in lib.snapshot.tracks:
-        correct = tid_to_correct.get(t.track_id)
-        if correct and t.artist != correct:
-            fixed_ids.add(t.track_id)
+        meta = tid_to_meta.get(t.track_id)
+        if meta is None:
+            continue
+        aa, ta, is_va = meta
 
-    if not fixed_ids:
-        return lib, 0
+        if t.metadata.compilation and aa and not is_va:
+            comp_fix_ids.add(t.track_id)
 
-    new_tracks = tuple(
-        replace(t, artist=tid_to_correct[t.track_id])
-        if t.track_id in fixed_ids else t
-        for t in lib.snapshot.tracks
-    )
+        # Only correct artist when it matches the Navidrome track-level artist —
+        # that's the value the old writer code set. Anything else means a user
+        # curated the field (or iTunes wrote it pre-adoption); leave it alone.
+        if aa and not is_va and ta != aa and t.artist == ta and t.artist != aa:
+            artist_fix_ids.add(t.track_id)
+
+    if not comp_fix_ids and not artist_fix_ids:
+        return lib, 0, 0
+
+    def _fix(t):
+        changed = False
+        new_artist = t.artist
+        new_meta = t.metadata
+        if t.track_id in artist_fix_ids:
+            new_artist = tid_to_meta[t.track_id][0]
+            changed = True
+        if t.track_id in comp_fix_ids:
+            new_meta = replace(t.metadata, compilation=False)
+            changed = True
+        return replace(t, artist=new_artist, metadata=new_meta) if changed else t
+
+    new_tracks = tuple(_fix(t) for t in lib.snapshot.tracks)
     new_snapshot = replace(lib.snapshot, tracks=new_tracks)
     updated = _commit(root, lib, wt, new_snapshot, (), False)
-    return updated, len(fixed_ids)
+    return updated, len(comp_fix_ids), len(artist_fix_ids)
 
 
 def update_artwork(
@@ -676,8 +653,7 @@ def add_drop_tracks(
             year = int((tags.get("date") or "")[:4] or 0)
             track_number = int((tags.get("tracknumber") or "").split("/")[0] or 0)
             disc_number = int((tags.get("discnumber") or "").split("/")[0] or 0)
-            _VA = {"various artists", "various", "va", "v.a.", "v/a"}
-            compilation = album_artist.lower() in _VA if album_artist else False
+            compilation = album_artist.lower() in _VA_NAMES if album_artist else False
 
             media_types = _KIND_MEDIA_TYPES.get(item.kind, (MediaType.AUDIO,))
             remember_position = item.kind in ("audiobook", "podcast")
@@ -810,12 +786,16 @@ def _commit(
 
     if result.prepared is None and artwork:
         # Stale ArtworkDB (e.g. after replacing all tracks) — retry without it.
-        # On a fresh iPod iTunesDB may not yet exist on disk; reuse the in-memory lib.
+        # On a fresh iPod iTunesDB may not yet exist on disk; reuse the in-memory lib
+        # (which already has sidecars attached above — don't re-attach).
         if any(e.code == "preparation.cannot_encode" for e in result.issues):
             db_on_disk = root / "iPod_Control" / "iTunes" / "iTunesDB"
-            lib2 = IPodLibrary.parse(db_on_disk.read_bytes()) if db_on_disk.exists() else lib
-            if sidecars:
-                lib2 = lib2.with_sidecars(sidecars)
+            if db_on_disk.exists():
+                lib2 = IPodLibrary.parse(db_on_disk.read_bytes())
+                if sidecars:
+                    lib2 = lib2.with_sidecars(sidecars)
+            else:
+                lib2 = lib
             result = _attempt(lib2)
 
     if result.prepared is None:

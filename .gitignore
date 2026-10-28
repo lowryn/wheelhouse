@@ -8,3 +8,4 @@ dist/
 .uv/
 *.sqlite
 .DS_Store
+adopt-*.csv

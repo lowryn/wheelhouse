@@ -84,7 +84,10 @@ def _guid_from_mac_usb() -> bytes:
     """Read a connected iPod's FireWireGUID from the USB serial number string.
 
     Uses ioreg to read kUSBSerialNumberString, which holds the 16-hex-char
-    GUID on flash-modded iPods without SysInfo. Returns b"" on any failure.
+    GUID on flash-modded iPods without SysInfo. Returns b"" when zero or more
+    than one iPod USB device is present — in the multi-iPod case we cannot
+    attribute a specific GUID without disk-to-USB tracing, and would rather
+    prompt the user than guess wrong.
     """
     try:
         out = subprocess.run(
@@ -93,9 +96,11 @@ def _guid_from_mac_usb() -> bytes:
         )
         if out.returncode != 0:
             return b""
-        m = re.search(r'"kUSBSerialNumberString"\s*=\s*"([0-9A-Fa-f]{16})"', out.stdout)
-        if m:
-            return bytes.fromhex(m.group(1))
+        guids = re.findall(
+            r'"kUSBSerialNumberString"\s*=\s*"([0-9A-Fa-f]{16})"', out.stdout
+        )
+        if len(guids) == 1:
+            return bytes.fromhex(guids[0])
     except Exception:
         pass
     return b""

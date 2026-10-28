@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 
 from iPodDB.library import Track
 
@@ -116,3 +118,99 @@ def match(ipod_tracks: list[Track], navidrome_songs: list[dict]) -> MatchResult:
         unmatched_ipod=unmatched_ipod,
         missing_from_ipod=missing_from_ipod,
     )
+
+
+@dataclass
+class AdoptPlan:
+    target: object           # MountedIPod (post config overrides)
+    ipod_tracks: list        # list[Track]
+    all_songs: list[dict]
+    desired_songs: list[dict]
+    result: MatchResult
+
+
+def plan(target, ipod_cfg, nd) -> AdoptPlan:
+    """Build an adopt plan: load library, fetch Navidrome, run the matcher.
+
+    Does not touch state or write to the iPod.
+    """
+    from wheelhouse.device import apply_config_overrides, build_write_target, load_library
+
+    target = apply_config_overrides(target, ipod_cfg)
+    wt, _profile = build_write_target(target.model, target.guid)
+    lib = load_library(target.root, wt)
+    ipod_tracks = list(lib.snapshot.tracks)
+
+    all_songs = nd.all_songs()
+    if ipod_cfg.music.mode == "all":
+        desired_songs = all_songs
+    else:
+        desired_ids: set[str] = set()
+        for pl in nd.playlists():
+            if ipod_cfg.music.matches_playlist(pl["name"]):
+                for entry in nd.playlist_songs(pl["id"]):
+                    desired_ids.add(entry["id"])
+        by_id = {s["id"]: s for s in all_songs}
+        desired_songs = [by_id[i] for i in desired_ids if i in by_id]
+
+    result = match(ipod_tracks, desired_songs)
+    return AdoptPlan(target, ipod_tracks, all_songs, desired_songs, result)
+
+
+def save(plan: AdoptPlan, ipod_cfg) -> int:
+    """Persist a matched plan to state. Returns the count saved."""
+    from wheelhouse import state as state_mod
+
+    db = state_mod.open_state()
+    state_mod.upsert_ipod(
+        db, plan.target.serial, ipod_cfg.name, plan.target.model, plan.target.guid,
+        int(time.time()),
+    )
+    now = int(time.time())
+    ipod_by_id = {t.track_id: t for t in plan.ipod_tracks}
+    for (tid, nd_id, path, method) in plan.result.matched:
+        t = ipod_by_id[tid]
+        state_mod.upsert_item(
+            db, plan.target.serial, nd_id,
+            ipod_track_id=tid,
+            ipod_path=path or "",
+            play_count=t.play_count,
+            match_method=method,
+            adopted_at=now,
+        )
+    db.commit()
+    db.close()
+    return len(plan.result.matched)
+
+
+def write_csv(plan: AdoptPlan, out_path: Path) -> None:
+    """Write the adopt match report as CSV for human review."""
+    import csv
+
+    by_id = {s["id"]: s for s in plan.all_songs}
+    ipod_by_id = {t.track_id: t for t in plan.ipod_tracks}
+    with open(out_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "status", "method", "ipod_track_id", "ipod_title", "ipod_artist",
+            "ipod_album", "nd_id", "nd_title", "nd_artist", "nd_album", "ipod_path",
+        ])
+        for (tid, nd_id, path, method) in plan.result.matched:
+            t = ipod_by_id[tid]
+            s = by_id.get(nd_id, {})
+            w.writerow(["matched", method, tid, t.title, t.artist, t.album,
+                        nd_id, s.get("title", ""), s.get("artist", ""),
+                        s.get("album", ""), path])
+        for (tid, title, cands) in plan.result.ambiguous:
+            t = ipod_by_id[tid]
+            w.writerow(["ambiguous", "", tid, t.title, t.artist, t.album,
+                        "|".join(cands), "", "", "", t.metadata.location])
+        for tid in plan.result.unmatched_ipod:
+            t = ipod_by_id[tid]
+            w.writerow(["unmatched_ipod", "", tid, t.title, t.artist, t.album,
+                        "", "", "", "", t.metadata.location])
+        for nd_id in plan.result.missing_from_ipod:
+            s = by_id.get(nd_id, {})
+            w.writerow(["missing_from_ipod", "", "", "", "", "",
+                        nd_id, s.get("title", ""), s.get("artist", ""),
+                        s.get("album", ""), ""])
