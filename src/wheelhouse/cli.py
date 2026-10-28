@@ -588,7 +588,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
 
     # ── 4. Fix compilation flags incorrectly set on non-VA tracks ────────
     lib, fix_count = writer.fix_compilation_flags(
-        target.root, lib, wt, desired_songs
+        target.root, lib, wt, desired_songs, managed
     )
     if fix_count:
         click.echo(f"\nFixed compilation flags on {fix_count} tracks.")

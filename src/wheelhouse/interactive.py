@@ -427,7 +427,7 @@ def _do_sync(
 
     # ── 4. Fix compilation flags incorrectly set on non-VA tracks ────────────
     lib, fix_count = writer.fix_compilation_flags(
-        target.root, lib, wt, desired_songs
+        target.root, lib, wt, desired_songs, managed
     )
     if fix_count:
         console.print(f"\nFixed compilation flags on {fix_count} tracks.")

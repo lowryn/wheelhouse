@@ -342,27 +342,27 @@ def fix_compilation_flags(
     lib: IPodLibrary,
     wt: WriteTarget,
     desired_songs: list[dict],
-    *,
-    on_progress: Callable[[int, str], None] | None = None,
+    managed: dict,
 ) -> tuple[IPodLibrary, int]:
     """Clear compilation=True on tracks that don't belong to a VA album.
 
-    Tracks where album_artist is set but is not "Various Artists" (or similar)
-    should not have compilation=True; that flag causes them to be grouped
-    separately in Cover Flow and the Compilations browse section.
+    Uses the managed state (ipod_track_id → Navidrome song) to find tracks
+    where compilation was incorrectly set. Only non-VA albums are corrected.
 
     Returns (updated_library, count_fixed).
     """
-    nd_by_title_artist: dict[tuple[str, str], dict] = {}
-    for s in desired_songs:
-        nd_by_title_artist[(s.get("title", ""), s.get("artist", ""))] = s
+    nd_by_id = {s["id"]: s for s in desired_songs}
+    tid_to_nd: dict[int, dict] = {}
+    for nd_id, item in managed.items():
+        song = nd_by_id.get(nd_id)
+        if song and item.ipod_track_id:
+            tid_to_nd[item.ipod_track_id] = song
 
-    fixed: list[Track] = []
+    fixed_ids: set[int] = set()
     for t in lib.snapshot.tracks:
         if not t.metadata.compilation:
             continue
-        key = (t.title, t.artist)
-        nd_song = nd_by_title_artist.get(key)
+        nd_song = tid_to_nd.get(t.track_id)
         if nd_song is None:
             continue
         aa = (
@@ -371,23 +371,19 @@ def fix_compilation_flags(
             or nd_song.get("artist", "")
         )
         if aa.lower() not in _VA_NAMES:
-            fixed.append(replace(t, metadata=replace(t.metadata, compilation=False)))
+            fixed_ids.add(t.track_id)
 
-    if not fixed:
+    if not fixed_ids:
         return lib, 0
 
-    fixed_ids = {t.track_id for t in fixed}
     new_tracks = tuple(
-        next((f for f in fixed if f.track_id == t.track_id), t)
+        replace(t, metadata=replace(t.metadata, compilation=False))
+        if t.track_id in fixed_ids else t
         for t in lib.snapshot.tracks
     )
     new_snapshot = replace(lib.snapshot, tracks=new_tracks)
-
-    if on_progress:
-        on_progress(len(fixed), "compilation flags")
-
     updated = _commit(root, lib, wt, new_snapshot, (), False)
-    return updated, len(fixed)
+    return updated, len(fixed_ids)
 
 
 def update_artwork(
