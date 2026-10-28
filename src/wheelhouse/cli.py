@@ -252,6 +252,24 @@ def adopt(serial: str | None, dry_run: bool, import_playlists: bool,
         )
 
 
+def _nd_sig(song: dict) -> str:
+    """Stable hash of the Navidrome fields that matter for iPod display/playback."""
+    import hashlib
+    fields = (
+        song.get("size") or 0,
+        song.get("suffix") or "",
+        song.get("title") or "",
+        song.get("artist") or "",
+        song.get("albumArtist") or song.get("displayAlbumArtist") or "",
+        song.get("album") or "",
+        song.get("year") or song.get("date") or "",
+        song.get("trackNumber") or song.get("track") or "",
+        song.get("discNumber") or song.get("disc") or "",
+        song.get("genre") or "",
+    )
+    return hashlib.sha1("|".join(str(f) for f in fields).encode()).hexdigest()[:16]
+
+
 @cli.command()
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--eject", is_flag=True, default=False)
@@ -361,9 +379,19 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
 
     # Tracks already on iPod that are still desired (will be kept)
     keep_nd_ids = managed_nd_ids & desired_nd_ids
-    keep_tids: set[int] = {managed[nd_id].ipod_track_id for nd_id in keep_nd_ids}
     all_current_tids = {t.track_id for t in lib.snapshot.tracks}
     managed_to_drop = managed_nd_ids - desired_nd_ids
+
+    # Tracks whose Navidrome metadata/file has changed since last sync
+    to_update_ids = {
+        nd_id for nd_id in keep_nd_ids
+        if managed[nd_id].source_sig
+        and managed[nd_id].source_sig != _nd_sig(desired_by_id[nd_id])
+    }
+    keep_tids: set[int] = {
+        managed[nd_id].ipod_track_id
+        for nd_id in keep_nd_ids - to_update_ids
+    }
 
     # ── Drop folder ───────────────────────────────────────────────────────
     drop_managed = state_mod.get_drop_managed(db, target.serial)
@@ -385,6 +413,8 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
     # ── Plan display ──────────────────────────────────────────────────────
     click.echo(f"\nDesired:    {len(desired_songs)}")
     click.echo(f"To add:     {len(to_add_ids)}  ({len(unsupported)} unsupported formats skipped)")
+    if to_update_ids:
+        click.echo(f"To update:  {len(to_update_ids)}")
     click.echo(f"To remove:  {len(all_current_tids) - len(keep_tids)} "
                f"({len(managed_to_drop)} managed + orphans/unmanaged)")
     if drop_scan or drop_managed:
@@ -444,6 +474,51 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
                     play_count=0,
                     match_method="sync",
                     adopted_at=added_ts,
+                    source_sig=_nd_sig(desired_by_id[nd_id]),
+                )
+
+    # ── 1b. Update tracks whose metadata/file changed ────────────────────
+    if to_update_ids:
+        songs_to_update = [desired_by_id[nd_id] for nd_id in sorted(to_update_ids)]
+        click.echo(f"\nUpdating {len(songs_to_update)} tracks…")
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            transient=True,
+        ) as prog:
+            task = prog.add_task("Updating", total=len(songs_to_update))
+
+            def _upd_progress(i: int, title: str) -> None:
+                prog.update(task, completed=i,
+                            description=f"[cyan]{title[:60]}[/cyan]")
+
+            lib, update_added = writer.add_tracks(
+                target.root, lib, wt, profile, nd, songs_to_update,
+                on_progress=_upd_progress,
+            )
+            prog.update(task, completed=len(songs_to_update),
+                        description="[green]Done[/green]")
+
+        click.echo(f"  Updated {len(update_added)} tracks.")
+
+        update_ts = int(time.time())
+        ipod_by_loc = {t.metadata.location: t for t in lib.snapshot.tracks}
+        for nd_id, ipod_path in update_added:
+            ipod_track = ipod_by_loc.get(ipod_path)
+            if ipod_track:
+                keep_tids.add(ipod_track.track_id)
+                state_mod.upsert_item(
+                    db, target.serial, nd_id,
+                    ipod_track_id=ipod_track.track_id,
+                    ipod_path=ipod_path,
+                    play_count=managed[nd_id].play_count,
+                    match_method="sync",
+                    adopted_at=update_ts,
+                    source_sig=_nd_sig(desired_by_id[nd_id]),
                 )
 
     # ── 2. Add drop folder tracks ─────────────────────────────────────────
@@ -543,6 +618,15 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         click.echo(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
 
     # ── 6. Finalise ───────────────────────────────────────────────────────
+    # Backfill sigs for kept tracks that predate change-detection.
+    backfill = {
+        nd_id: _nd_sig(desired_by_id[nd_id])
+        for nd_id in keep_nd_ids - to_update_ids
+        if not managed[nd_id].source_sig and nd_id in desired_by_id
+    }
+    if backfill:
+        state_mod.bulk_set_source_sig(db, target.serial, backfill)
+
     state_mod.upsert_ipod(
         db, target.serial, ipod_cfg.name, target.model, target.guid,
         int(time.time()),

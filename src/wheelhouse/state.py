@@ -88,6 +88,7 @@ class ManagedItem:
     play_count: int
     match_method: str
     adopted_at: int      # Unix seconds
+    source_sig: str = ""  # hash of Navidrome metadata; empty = not yet recorded
 
 
 def upsert_item(
@@ -99,26 +100,28 @@ def upsert_item(
     play_count: int,
     match_method: str,
     adopted_at: int,
+    source_sig: str = "",
 ) -> None:
     db.execute(
         """
         INSERT INTO item (ipod_serial, source, source_id, ipod_track_id, ipod_path,
-                          play_count, match_method, adopted_at)
-        VALUES (?, 'navidrome', ?, ?, ?, ?, ?, ?)
+                          play_count, match_method, adopted_at, source_sig)
+        VALUES (?, 'navidrome', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ipod_serial, source, source_id) DO UPDATE SET
             ipod_track_id = excluded.ipod_track_id,
             ipod_path     = excluded.ipod_path,
             play_count    = excluded.play_count,
             match_method  = excluded.match_method,
-            adopted_at    = excluded.adopted_at
+            adopted_at    = excluded.adopted_at,
+            source_sig    = excluded.source_sig
         """,
-        (serial, nd_id, ipod_track_id, ipod_path, play_count, match_method, adopted_at),
+        (serial, nd_id, ipod_track_id, ipod_path, play_count, match_method, adopted_at, source_sig),
     )
 
 
 def get_managed(db: sqlite3.Connection, serial: str) -> dict[str, ManagedItem]:
     rows = db.execute(
-        "SELECT source_id, ipod_track_id, ipod_path, play_count, match_method, adopted_at "
+        "SELECT source_id, ipod_track_id, ipod_path, play_count, match_method, adopted_at, source_sig "
         "FROM item WHERE ipod_serial = ? AND source = 'navidrome'",
         (serial,),
     ).fetchall()
@@ -130,9 +133,21 @@ def get_managed(db: sqlite3.Connection, serial: str) -> dict[str, ManagedItem]:
             play_count=r["play_count"],
             match_method=r["match_method"],
             adopted_at=r["adopted_at"],
+            source_sig=r["source_sig"] or "",
         )
         for r in rows
     }
+
+
+def bulk_set_source_sig(
+    db: sqlite3.Connection, serial: str, sigs: dict[str, str]
+) -> None:
+    """Set source_sig for multiple navidrome items in one shot (backfill)."""
+    db.executemany(
+        "UPDATE item SET source_sig = ? "
+        "WHERE ipod_serial = ? AND source = 'navidrome' AND source_id = ? AND (source_sig IS NULL OR source_sig = '')",
+        [(sig, serial, nd_id) for nd_id, sig in sigs.items()],
+    )
 
 
 def update_play_count(
