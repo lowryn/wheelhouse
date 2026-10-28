@@ -586,7 +586,14 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
             state_mod.remove_drop_item(db, target.serial, rel_path)
         click.echo("  Done.")
 
-    # ── 4. Update artwork for tracks missing it ───────────────────────────
+    # ── 4. Fix compilation flags incorrectly set on non-VA tracks ────────
+    lib, fix_count = writer.fix_compilation_flags(
+        target.root, lib, wt, desired_songs
+    )
+    if fix_count:
+        click.echo(f"\nFixed compilation flags on {fix_count} tracks.")
+
+    # ── 5. Update artwork for tracks missing it ───────────────────────────
     managed = state_mod.get_managed(db, target.serial)
     tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
     if tracks_no_art and managed:
@@ -615,13 +622,13 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         if art_count:
             click.echo(f"  Updated {art_count} tracks.")
 
-    # ── 5. Sync notes ────────────────────────────────────────────────────
+    # ── 6. Sync notes ────────────────────────────────────────────────────
     if not skip_drop:
         notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
         if notes_added or notes_removed:
             click.echo(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
 
-    # ── 6. Finalise ───────────────────────────────────────────────────────
+    # ── 7. Finalise ───────────────────────────────────────────────────────
     # Backfill sigs for kept tracks that predate change-detection.
     backfill = {
         nd_id: _nd_sig(desired_by_id[nd_id])

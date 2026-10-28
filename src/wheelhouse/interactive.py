@@ -425,7 +425,14 @@ def _do_sync(
             state_mod.remove_drop_item(db, target.serial, rel_path)
         console.print("  Done.")
 
-    # ── 4. Update artwork for tracks missing it ───────────────────────────────
+    # ── 4. Fix compilation flags incorrectly set on non-VA tracks ────────────
+    lib, fix_count = writer.fix_compilation_flags(
+        target.root, lib, wt, desired_songs
+    )
+    if fix_count:
+        console.print(f"\nFixed compilation flags on {fix_count} tracks.")
+
+    # ── 5. Update artwork for tracks missing it ───────────────────────────────
     managed = state_mod.get_managed(db, target.serial)
     tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
     if tracks_no_art and managed:
@@ -449,13 +456,13 @@ def _do_sync(
         if art_count:
             console.print(f"  Updated {art_count} tracks.")
 
-    # ── 5. Sync notes ─────────────────────────────────────────────────────────
+    # ── 6. Sync notes ─────────────────────────────────────────────────────────
     if not skip_drop:
         notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
         if notes_added or notes_removed:
             console.print(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
 
-    # ── 6. Finalise ───────────────────────────────────────────────────────────
+    # ── 7. Finalise ───────────────────────────────────────────────────────────
     backfill = {
         nd_id: _nd_sig(desired_by_id[nd_id])
         for nd_id in keep_nd_ids - to_update_ids

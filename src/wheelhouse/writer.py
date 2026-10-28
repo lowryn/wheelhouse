@@ -202,11 +202,8 @@ def add_tracks(
                 or song.get("displayAlbumArtist")
                 or song.get("artist", "")
             )
-            compilation = bool(
-                album_artist
-                and song.get("artist", "")
-                and song.get("artist", "") != album_artist
-            )
+            _VA = {"various artists", "various", "va", "v.a.", "v/a"}
+            compilation = album_artist.lower() in _VA if album_artist else False
 
             artwork_id = 0
             cover_id = song.get("coverArt")
@@ -335,6 +332,62 @@ def sync_notes(root: Path, drop_folder: Path) -> tuple[int, int]:
             removed += 1
 
     return added, removed
+
+
+_VA_NAMES = {"various artists", "various", "va", "v.a.", "v/a"}
+
+
+def fix_compilation_flags(
+    root: Path,
+    lib: IPodLibrary,
+    wt: WriteTarget,
+    desired_songs: list[dict],
+    *,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> tuple[IPodLibrary, int]:
+    """Clear compilation=True on tracks that don't belong to a VA album.
+
+    Tracks where album_artist is set but is not "Various Artists" (or similar)
+    should not have compilation=True; that flag causes them to be grouped
+    separately in Cover Flow and the Compilations browse section.
+
+    Returns (updated_library, count_fixed).
+    """
+    nd_by_title_artist: dict[tuple[str, str], dict] = {}
+    for s in desired_songs:
+        nd_by_title_artist[(s.get("title", ""), s.get("artist", ""))] = s
+
+    fixed: list[Track] = []
+    for t in lib.snapshot.tracks:
+        if not t.metadata.compilation:
+            continue
+        key = (t.title, t.artist)
+        nd_song = nd_by_title_artist.get(key)
+        if nd_song is None:
+            continue
+        aa = (
+            nd_song.get("albumArtist")
+            or nd_song.get("displayAlbumArtist")
+            or nd_song.get("artist", "")
+        )
+        if aa.lower() not in _VA_NAMES:
+            fixed.append(replace(t, metadata=replace(t.metadata, compilation=False)))
+
+    if not fixed:
+        return lib, 0
+
+    fixed_ids = {t.track_id for t in fixed}
+    new_tracks = tuple(
+        next((f for f in fixed if f.track_id == t.track_id), t)
+        for t in lib.snapshot.tracks
+    )
+    new_snapshot = replace(lib.snapshot, tracks=new_tracks)
+
+    if on_progress:
+        on_progress(len(fixed), "compilation flags")
+
+    updated = _commit(root, lib, wt, new_snapshot, (), False)
+    return updated, len(fixed)
 
 
 def update_artwork(
@@ -567,7 +620,8 @@ def add_drop_tracks(
             year = int((tags.get("date") or "")[:4] or 0)
             track_number = int((tags.get("tracknumber") or "").split("/")[0] or 0)
             disc_number = int((tags.get("discnumber") or "").split("/")[0] or 0)
-            compilation = bool(album_artist and artist and artist != album_artist)
+            _VA = {"various artists", "various", "va", "v.a.", "v/a"}
+            compilation = album_artist.lower() in _VA if album_artist else False
 
             media_types = _KIND_MEDIA_TYPES.get(item.kind, (MediaType.AUDIO,))
             remember_position = item.kind in ("audiobook", "podcast")
