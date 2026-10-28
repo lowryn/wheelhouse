@@ -170,7 +170,8 @@ def _do_sync(
     # ── Scrobble plays ────────────────────────────────────────────────────────
     from wheelhouse.scrobble import push_plays
     report = push_plays(db, nd, target.serial, managed, ipod_by_tid)
-    console.print(f"Plays scrobbled: {report.scrobbled}")
+    if report.scrobbled:
+        console.print(f"Plays scrobbled: {report.scrobbled}")
     if report.failed:
         console.print(
             f"[yellow]{report.failed} play(s) failed to scrobble — will retry next sync.[/yellow]"
@@ -235,49 +236,56 @@ def _do_sync(
         if p in drop_by_path and drop_managed[p].ipod_track_id > 0 and p not in drop_stale
     )
 
-    # ── Plan table ────────────────────────────────────────────────────────────
-    tbl = Table.grid(padding=(0, 2))
-    tbl.add_column(style="dim")
-    tbl.add_column()
-    tbl.add_row("Desired", str(len(desired_songs)))
-    tbl.add_row(
-        "To add",
-        f"{len(to_add_ids)}"
-        + (f"  [dim]({len(unsupported)} unsupported skipped)[/dim]" if unsupported else ""),
+    tracks_to_remove = len(all_current_tids) - len(keep_tids)
+    plan_has_work = bool(
+        to_add_ids or to_update_ids or tracks_to_remove or drop_to_add or drop_to_remove
     )
-    if to_update_ids:
-        tbl.add_row("To update", str(len(to_update_ids)))
-    tbl.add_row(
-        "To remove",
-        f"{len(all_current_tids) - len(keep_tids)}"
-        + (f"  [dim]({len(managed_to_drop)} managed + orphans)[/dim]" if managed_to_drop else ""),
-    )
-    if drop_scan or drop_managed:
-        tbl.add_row("Drop", f"{len(drop_to_add)} to add, {len(drop_to_remove)} to remove")
-    console.print()
-    console.print(tbl)
 
-    if unsupported:
-        console.print("\n[dim]Skipped (transcoding not yet supported):[/dim]")
-        for nd_id in sorted(unsupported):
-            s = desired_by_id[nd_id]
-            fmt = (s.get("suffix") or "?").upper()
-            console.print(f"  [dim][{fmt}] {s.get('artist', '')} — {s.get('title', '')}[/dim]")
+    # ── Plan table (only when there's work) ───────────────────────────────────
+    if plan_has_work:
+        tbl = Table.grid(padding=(0, 2))
+        tbl.add_column(style="dim")
+        tbl.add_column()
+        tbl.add_row("Desired", str(len(desired_songs)))
+        tbl.add_row(
+            "To add",
+            f"{len(to_add_ids)}"
+            + (f"  [dim]({len(unsupported)} unsupported skipped)[/dim]" if unsupported else ""),
+        )
+        if to_update_ids:
+            tbl.add_row("To update", str(len(to_update_ids)))
+        tbl.add_row(
+            "To remove",
+            f"{tracks_to_remove}"
+            + (f"  [dim]({len(managed_to_drop)} managed + orphans)[/dim]" if managed_to_drop else ""),
+        )
+        if drop_scan or drop_managed:
+            tbl.add_row("Drop", f"{len(drop_to_add)} to add, {len(drop_to_remove)} to remove")
+        console.print()
+        console.print(tbl)
 
-    console.print()
+        if unsupported:
+            console.print("\n[dim]Skipped (transcoding not yet supported):[/dim]")
+            for nd_id in sorted(unsupported):
+                s = desired_by_id[nd_id]
+                fmt = (s.get("suffix") or "?").upper()
+                console.print(f"  [dim][{fmt}] {s.get('artist', '')} — {s.get('title', '')}[/dim]")
+
+        console.print()
 
     # ── Confirm ───────────────────────────────────────────────────────────────
-    plan_action = questionary.select(
-        "Action:",
-        choices=["Sync", "Back", "Quit"],
-    ).ask()
+    if plan_has_work:
+        plan_action = questionary.select(
+            "Action:",
+            choices=["Sync", "Back", "Quit"],
+        ).ask()
 
-    if plan_action is None or plan_action == "Quit":
-        db.close()
-        return "quit"
-    if plan_action == "Back":
-        db.close()
-        return "back"
+        if plan_action is None or plan_action == "Quit":
+            db.close()
+            return "quit"
+        if plan_action == "Back":
+            db.close()
+            return "back"
 
     # ── 1. Add Navidrome tracks ───────────────────────────────────────────────
     newly_added: list[tuple[str, str]] = []
@@ -447,6 +455,7 @@ def _do_sync(
             console.print(f"  Updated {art_count} tracks.")
 
     # ── 6. Sync notes ─────────────────────────────────────────────────────────
+    notes_added = notes_removed = 0
     if not skip_drop:
         notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
         if notes_added or notes_removed:
@@ -471,7 +480,15 @@ def _do_sync(
     )
     db.commit()
     db.close()
-    console.print("\n[green]Sync complete.[/green]")
+
+    any_work = (
+        plan_has_work or report.scrobbled or report.failed
+        or comp_fixes or artist_fixes or notes_added or notes_removed
+        or (tracks_no_art and managed)
+    )
+    console.print(
+        "\n[green]Sync complete.[/green]" if any_work else "[dim]Up to date.[/dim]"
+    )
     return "done"
 
 

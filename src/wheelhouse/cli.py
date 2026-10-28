@@ -243,7 +243,8 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     nd = NavidromeClient(cfg.navidrome.url, cfg.navidrome.user, cfg.navidrome.password())
     from wheelhouse.scrobble import push_plays
     report = push_plays(db, nd, target.serial, managed, ipod_by_tid, dry_run=dry_run)
-    click.echo(f"Plays scrobbled: {report.scrobbled}")
+    if report.scrobbled:
+        click.echo(f"Plays scrobbled: {report.scrobbled}")
     if report.failed:
         click.echo(
             f"[warning] {report.failed} play(s) failed to scrobble — will retry next sync.",
@@ -313,25 +314,38 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         if p in drop_by_path and drop_managed[p].ipod_track_id > 0 and p not in drop_stale
     )
 
-    # ── Plan display ──────────────────────────────────────────────────────
-    click.echo(f"\nDesired:    {len(desired_songs)}")
-    click.echo(f"To add:     {len(to_add_ids)}  ({len(unsupported)} unsupported formats skipped)")
-    if to_update_ids:
-        click.echo(f"To update:  {len(to_update_ids)}")
-    click.echo(f"To remove:  {len(all_current_tids) - len(keep_tids)} "
-               f"({len(managed_to_drop)} managed + orphans/unmanaged)")
-    if drop_scan or drop_managed:
-        click.echo(f"Drop:       {len(drop_to_add)} to add, {len(drop_to_remove)} to remove")
+    tracks_to_remove = len(all_current_tids) - len(keep_tids)
+    plan_has_work = bool(
+        to_add_ids or to_update_ids or tracks_to_remove or drop_to_add or drop_to_remove
+    )
 
-    if unsupported:
-        click.echo("\nSkipped (transcoding not yet supported):")
-        for nd_id in sorted(unsupported):
-            s = desired_by_id[nd_id]
-            fmt = (s.get("suffix") or "?").upper()
-            click.echo(f"  [{fmt}] {s.get('artist', '')} — {s.get('title', '')}")
+    if plan_has_work:
+        click.echo(f"\nDesired:    {len(desired_songs)}")
+        click.echo(
+            f"To add:     {len(to_add_ids)}  "
+            f"({len(unsupported)} unsupported formats skipped)"
+        )
+        if to_update_ids:
+            click.echo(f"To update:  {len(to_update_ids)}")
+        click.echo(f"To remove:  {tracks_to_remove} "
+                   f"({len(managed_to_drop)} managed + orphans/unmanaged)")
+        if drop_scan or drop_managed:
+            click.echo(
+                f"Drop:       {len(drop_to_add)} to add, {len(drop_to_remove)} to remove"
+            )
+
+        if unsupported:
+            click.echo("\nSkipped (transcoding not yet supported):")
+            for nd_id in sorted(unsupported):
+                s = desired_by_id[nd_id]
+                fmt = (s.get("suffix") or "?").upper()
+                click.echo(f"  [{fmt}] {s.get('artist', '')} — {s.get('title', '')}")
 
     if dry_run:
-        click.echo("\n(dry run — no changes written)")
+        if plan_has_work:
+            click.echo("\n(dry run — no changes written)")
+        else:
+            click.echo("No changes.")
         db.close()
         return
 
@@ -523,6 +537,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
             click.echo(f"  Updated {art_count} tracks.")
 
     # ── 6. Sync notes ────────────────────────────────────────────────────
+    notes_added = notes_removed = 0
     if not skip_drop:
         notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
         if notes_added or notes_removed:
@@ -545,7 +560,13 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     state_mod.set_last_sync(db, target.serial, int(time.time()))
     db.commit()
     db.close()
-    click.echo("\nSync complete.")
+
+    any_work = (
+        plan_has_work or report.scrobbled or report.failed
+        or comp_fixes or artist_fixes or notes_added or notes_removed
+        or (tracks_no_art and managed)
+    )
+    click.echo("\nSync complete." if any_work else "Up to date.")
 
     if eject:
         import subprocess
