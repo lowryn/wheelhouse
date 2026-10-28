@@ -305,7 +305,7 @@ def _do_sync(
 
             lib, newly_added = writer.add_tracks(
                 target.root, lib, wt, profile, nd, songs_to_add,
-                on_progress=_progress,
+                on_progress=_progress, cache_dir=cfg.cache_dir,
             )
             prog.update(task, completed=len(songs_to_add), description="[green]Done[/green]")
 
@@ -344,7 +344,7 @@ def _do_sync(
 
             lib, update_added = writer.add_tracks(
                 target.root, lib, wt, profile, nd, songs_to_update,
-                on_progress=_upd_progress,
+                on_progress=_upd_progress, cache_dir=cfg.cache_dir,
             )
             prog.update(task, completed=len(songs_to_update), description="[green]Done[/green]")
 

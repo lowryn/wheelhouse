@@ -371,7 +371,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
 
             lib, newly_added = writer.add_tracks(
                 target.root, lib, wt, profile, nd, songs_to_add,
-                on_progress=_progress,
+                on_progress=_progress, cache_dir=cfg.cache_dir,
             )
             prog.update(task, completed=len(songs_to_add),
                         description="[green]Done[/green]")
@@ -415,7 +415,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
 
             lib, update_added = writer.add_tracks(
                 target.root, lib, wt, profile, nd, songs_to_update,
-                on_progress=_upd_progress,
+                on_progress=_upd_progress, cache_dir=cfg.cache_dir,
             )
             prog.update(task, completed=len(songs_to_update),
                         description="[green]Done[/green]")

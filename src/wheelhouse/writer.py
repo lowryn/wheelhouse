@@ -129,6 +129,37 @@ _FORMAT_NAME = {
 }
 
 
+def _audio_cache_path(cache_dir: Path | None, song: dict) -> Path | None:
+    """Local cache path for a Navidrome download, or None if caching disabled.
+
+    Keyed by (nd_id, size) so a change in the file content (same id, new size)
+    will bypass a stale cached copy.
+    """
+    if cache_dir is None:
+        return None
+    return cache_dir / "audio" / f"{song['id']}_{song.get('size') or 0}.bin"
+
+
+def _fetch_audio(nd: NavidromeClient, cache_dir: Path | None, song: dict) -> bytes:
+    """Fetch audio bytes for *song*, using the local cache if available.
+
+    A successful cache hit skips the network call entirely — this is what makes
+    retrying a crashed sync cheap. The cache is cleared per-track after the
+    successful commit in add_tracks(), so disk usage is bounded by whatever
+    is in-flight.
+    """
+    cp = _audio_cache_path(cache_dir, song)
+    if cp is not None and cp.exists():
+        return cp.read_bytes()
+    audio_bytes = nd.download(song["id"])
+    if cp is not None:
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cp.with_suffix(cp.suffix + ".tmp")
+        tmp.write_bytes(audio_bytes)
+        tmp.replace(cp)
+    return audio_bytes
+
+
 def _max_artworkdb_image_id(root: Path) -> int:
     """Return the max mhii image_id in the ArtworkDB to avoid ID conflicts."""
     art_path = root / "iPod_Control/Artwork/ArtworkDB"
@@ -157,12 +188,15 @@ def add_tracks(
     songs: list[dict],
     *,
     on_progress: Callable[[int, str], None] | None = None,
+    cache_dir: Path | None = None,
 ) -> tuple[IPodLibrary, list[tuple[str, str]]]:
     """Download *songs* from Navidrome, copy to iPod, update iTunes database.
 
     Returns (updated_library, [(nd_id, ipod_path), ...]).
     Tracks with unsupported formats (FLAC, OGG, …) are skipped silently.
-    On any failure, already-written audio files are deleted before re-raising.
+    On any failure, already-written iPod audio files are deleted before
+    re-raising, but the *local download cache* (if ``cache_dir`` is given) is
+    preserved so a retry only has to re-run the commit, not re-download audio.
     """
     occupied = [t.metadata.location for t in lib.snapshot.tracks if t.metadata.location]
     allocator = MusicPathAllocator(
@@ -180,6 +214,7 @@ def add_tracks(
     added: list[tuple[str, str]] = []
     files_written: list[Path] = []
     cover_id_to_artwork_id: dict[str, int] = {}
+    cached_songs: list[dict] = []
 
     try:
         for i, song in enumerate(songs):
@@ -190,7 +225,8 @@ def add_tracks(
             if suffix in SKIP_FORMATS:
                 continue
 
-            audio_bytes = nd.download(song["id"])
+            audio_bytes = _fetch_audio(nd, cache_dir, song)
+            cached_songs.append(song)
             encoding = _detect_encoding(suffix, audio_bytes)
             if encoding is None:
                 continue
@@ -277,6 +313,15 @@ def add_tracks(
         new_snapshot = replace(lib.snapshot, tracks=tuple(new_tracks))
         updated = _commit(root, lib, wt, new_snapshot, tuple(media_list), False,
                           artwork=tuple(artwork_assets))
+
+        # Commit succeeded — the audio is now on the iPod, so the local cache
+        # copies are no longer needed. Keep them on failure so a retry only
+        # has to re-run the commit, not re-download.
+        for s in cached_songs:
+            cp = _audio_cache_path(cache_dir, s)
+            if cp is not None:
+                cp.unlink(missing_ok=True)
+
         return updated, added
 
     except Exception:
