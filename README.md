@@ -17,8 +17,8 @@ to read the code before trusting it with a device you care about.
 ## Install
 
 ```sh
-git clone https://github.com/lowryn/iPodSubSync.git
-cd iPodSubSync
+git clone https://github.com/lowryn/wheelhouse.git
+cd wheelhouse
 uv sync
 ```
 
