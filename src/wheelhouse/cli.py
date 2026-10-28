@@ -180,22 +180,7 @@ def adopt(serial: str | None, dry_run: bool, csv_out: str | None) -> None:
         )
 
 
-def _nd_sig(song: dict) -> str:
-    """Stable hash of the Navidrome fields that matter for iPod display/playback."""
-    import hashlib
-    fields = (
-        song.get("size") or 0,
-        song.get("suffix") or "",
-        song.get("title") or "",
-        song.get("artist") or "",
-        song.get("albumArtist") or song.get("displayAlbumArtist") or "",
-        song.get("album") or "",
-        song.get("year") or song.get("date") or "",
-        song.get("trackNumber") or song.get("track") or "",
-        song.get("discNumber") or song.get("disc") or "",
-        song.get("genre") or "",
-    )
-    return hashlib.sha1("|".join(str(f) for f in fields).encode()).hexdigest()[:16]
+from wheelhouse.state import nd_sig as _nd_sig
 
 
 @cli.command()
@@ -256,26 +241,14 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
 
     # ── Scrobble plays ────────────────────────────────────────────────────
     nd = NavidromeClient(cfg.navidrome.url, cfg.navidrome.user, cfg.navidrome.password())
-    scrobble_count = 0
-    now_ms = int(time.time() * 1000)
-
-    for nd_id, item in managed.items():
-        t = ipod_by_tid.get(item.ipod_track_id)
-        if t is None or t.play_count <= item.play_count:
-            continue
-        delta = t.play_count - item.play_count
-        if not dry_run:
-            for _ in range(delta):
-                try:
-                    nd.scrobble(nd_id, now_ms)
-                    state_mod.record_scrobble(db, target.serial, nd_id, int(time.time()))
-                except Exception:
-                    pass
-            state_mod.update_play_count(db, target.serial, nd_id, t.play_count)
-            managed[nd_id].play_count = t.play_count
-        scrobble_count += delta
-
-    click.echo(f"Plays scrobbled: {scrobble_count}")
+    from wheelhouse.scrobble import push_plays
+    report = push_plays(db, nd, target.serial, managed, ipod_by_tid, dry_run=dry_run)
+    click.echo(f"Plays scrobbled: {report.scrobbled}")
+    if report.failed:
+        click.echo(
+            f"[warning] {report.failed} play(s) failed to scrobble — will retry next sync.",
+            err=True,
+        )
 
     # ── Fetch desired set ─────────────────────────────────────────────────
     click.echo("Fetching Navidrome library…", nl=False)

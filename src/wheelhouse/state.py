@@ -1,9 +1,31 @@
 """SQLite state: per-iPod managed tracks, play counts, scrobble ledger."""
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def nd_sig(song: dict) -> str:
+    """Stable short hash of the Navidrome fields that drive iPod display.
+
+    Used to detect when Navidrome metadata or file content has changed since
+    the last sync and the on-iPod copy needs to be refreshed.
+    """
+    fields = (
+        song.get("size") or 0,
+        song.get("suffix") or "",
+        song.get("title") or "",
+        song.get("artist") or "",
+        song.get("albumArtist") or song.get("displayAlbumArtist") or "",
+        song.get("album") or "",
+        song.get("year") or song.get("date") or "",
+        song.get("trackNumber") or song.get("track") or "",
+        song.get("discNumber") or song.get("disc") or "",
+        song.get("genre") or "",
+    )
+    return hashlib.sha1("|".join(str(f) for f in fields).encode()).hexdigest()[:16]
 
 DEFAULT_STATE_PATH = Path("~/Library/Application Support/wheelhouse/state.sqlite").expanduser()
 
@@ -52,13 +74,19 @@ CREATE TABLE IF NOT EXISTS cache (
 );
 """
 
-_MIGRATE = """
-ALTER TABLE item ADD COLUMN play_count  INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE item ADD COLUMN match_method TEXT   NOT NULL DEFAULT '';
-ALTER TABLE item ADD COLUMN adopted_at   INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE ipod ADD COLUMN last_sync   INTEGER;
-ALTER TABLE ipod ADD COLUMN last_playlists TEXT;
-"""
+# Schema additions to apply on databases created before the column existed.
+# SQLite has no `ALTER TABLE ADD COLUMN IF NOT EXISTS`; we catch the
+# "duplicate column name" OperationalError that signals the column is already
+# present. Any other OperationalError (e.g. missing table) is re-raised so a
+# genuine schema problem surfaces instead of being swallowed.
+_MIGRATE = (
+    "ALTER TABLE item ADD COLUMN play_count   INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE item ADD COLUMN match_method TEXT    NOT NULL DEFAULT ''",
+    "ALTER TABLE item ADD COLUMN adopted_at   INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE item ADD COLUMN source_sig   TEXT    NOT NULL DEFAULT ''",
+    "ALTER TABLE ipod ADD COLUMN last_sync      INTEGER",
+    "ALTER TABLE ipod ADD COLUMN last_playlists TEXT",
+)
 
 
 def open_state(path: Path = DEFAULT_STATE_PATH) -> sqlite3.Connection:
@@ -66,12 +94,12 @@ def open_state(path: Path = DEFAULT_STATE_PATH) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.executescript(DDL)
-    # Best-effort schema migration for older databases
-    for stmt in _MIGRATE.strip().splitlines():
+    for stmt in _MIGRATE:
         try:
             db.execute(stmt)
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
     db.commit()
     return db
 

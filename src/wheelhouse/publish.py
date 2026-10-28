@@ -1,4 +1,4 @@
-"""Copy media, prepare DB, safe write, verify, clean up."""
+"""Crash-safe file writes to the iPod volume."""
 from __future__ import annotations
 
 import os
@@ -19,11 +19,3 @@ def atomic_write(path: Path, data: bytes) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-
-
-def publish(*, root: Path, prepared, dry_run: bool) -> None:
-    raise NotImplementedError
-
-
-def verify(*, root: Path, library) -> None:
-    raise NotImplementedError

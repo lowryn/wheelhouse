@@ -136,13 +136,15 @@ def _max_artworkdb_image_id(root: Path) -> int:
         return 0
     data = art_path.read_bytes()
     max_id = 0
-    i = 0
-    while i < len(data) - 20:
-        if data[i : i + 4] == b"mhii":
-            image_id = int.from_bytes(data[i + 16 : i + 20], "little")
-            if image_id > max_id:
-                max_id = image_id
-        i += 1
+    pos = 0
+    while True:
+        pos = data.find(b"mhii", pos)
+        if pos < 0 or pos + 20 > len(data):
+            break
+        image_id = int.from_bytes(data[pos + 16 : pos + 20], "little")
+        if image_id > max_id:
+            max_id = image_id
+        pos += 4
     return max_id
 
 

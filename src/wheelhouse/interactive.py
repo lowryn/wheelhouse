@@ -20,7 +20,7 @@ from rich.table import Column, Table
 from wheelhouse import state as state_mod
 from wheelhouse import writer
 from wheelhouse import dropfolder as df_mod
-from wheelhouse.cli import _nd_sig
+from wheelhouse.state import nd_sig as _nd_sig
 from wheelhouse.config import Config, IPodConfig, append_ipod_to_config, load as load_config
 from wheelhouse.device import MountedIPod, apply_config_overrides, build_write_target, find_ipods, identify, load_library
 from wheelhouse.navidrome import NavidromeClient
@@ -168,23 +168,13 @@ def _do_sync(
     ipod_by_tid = {t.track_id: t for t in lib.snapshot.tracks}
 
     # ── Scrobble plays ────────────────────────────────────────────────────────
-    scrobble_count = 0
-    now_ms = int(time.time() * 1000)
-    for nd_id, item in managed.items():
-        t = ipod_by_tid.get(item.ipod_track_id)
-        if t is None or t.play_count <= item.play_count:
-            continue
-        delta = t.play_count - item.play_count
-        for _ in range(delta):
-            try:
-                nd.scrobble(nd_id, now_ms)
-                state_mod.record_scrobble(db, target.serial, nd_id, int(time.time()))
-            except Exception:
-                pass
-        state_mod.update_play_count(db, target.serial, nd_id, t.play_count)
-        managed[nd_id].play_count = t.play_count
-        scrobble_count += delta
-    console.print(f"Plays scrobbled: {scrobble_count}")
+    from wheelhouse.scrobble import push_plays
+    report = push_plays(db, nd, target.serial, managed, ipod_by_tid)
+    console.print(f"Plays scrobbled: {report.scrobbled}")
+    if report.failed:
+        console.print(
+            f"[yellow]{report.failed} play(s) failed to scrobble — will retry next sync.[/yellow]"
+        )
 
     # ── Desired set ───────────────────────────────────────────────────────────
     console.print("Fetching Navidrome library…", end=" ")
