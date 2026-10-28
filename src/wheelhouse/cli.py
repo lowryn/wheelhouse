@@ -369,11 +369,17 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
     drop_managed = state_mod.get_drop_managed(db, target.serial)
     drop_scan = df_mod.scan(cfg.drop_folder) if cfg.drop_folder.exists() else []
     drop_by_path = {item.rel_path: item for item in drop_scan}
-    drop_to_add = [item for item in drop_scan if item.rel_path not in drop_managed]
+    # Items whose DB track was removed by an external sync need re-adding.
+    current_locations = {t.metadata.location for t in lib.snapshot.tracks}
+    drop_stale = {
+        p for p, row in drop_managed.items()
+        if p in drop_by_path and row.ipod_path and row.ipod_path not in current_locations
+    }
+    drop_to_add = [item for item in drop_scan if item.rel_path not in drop_managed or item.rel_path in drop_stale]
     drop_to_remove = {p for p in drop_managed if p not in drop_by_path}
     keep_tids.update(
         drop_managed[p].ipod_track_id for p in drop_managed
-        if p in drop_by_path and drop_managed[p].ipod_track_id > 0
+        if p in drop_by_path and drop_managed[p].ipod_track_id > 0 and p not in drop_stale
     )
 
     # ── Plan display ──────────────────────────────────────────────────────
@@ -441,6 +447,12 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
                 )
 
     # ── 2. Add drop folder tracks ─────────────────────────────────────────
+    for rel_path in drop_stale:
+        stale_ipod_path = drop_managed[rel_path].ipod_path
+        if stale_ipod_path:
+            stale_file = target.root / stale_ipod_path
+            stale_file.unlink(missing_ok=True)
+
     if drop_to_add:
         click.echo(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 

@@ -124,6 +124,23 @@ _FORMAT_NAME = {
 }
 
 
+def _max_artworkdb_image_id(root: Path) -> int:
+    """Return the max mhii image_id in the ArtworkDB to avoid ID conflicts."""
+    art_path = root / "iPod_Control/Artwork/ArtworkDB"
+    if not art_path.exists():
+        return 0
+    data = art_path.read_bytes()
+    max_id = 0
+    i = 0
+    while i < len(data) - 20:
+        if data[i : i + 4] == b"mhii":
+            image_id = int.from_bytes(data[i + 16 : i + 20], "little")
+            if image_id > max_id:
+                max_id = image_id
+        i += 1
+    return max_id
+
+
 def add_tracks(
     root: Path,
     lib: IPodLibrary,
@@ -145,7 +162,10 @@ def add_tracks(
         profile.capabilities.database.music_directory_count, occupied
     )
     next_id = max((t.track_id for t in lib.snapshot.tracks), default=0) + 1
-    next_artwork_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
+    next_artwork_id = max(
+        max((t.artwork_id for t in lib.snapshot.tracks), default=0),
+        _max_artworkdb_image_id(root),
+    ) + 1
 
     new_tracks = list(lib.snapshot.tracks)
     media_list: list[PreparedMedia] = []
@@ -341,7 +361,10 @@ def update_artwork(
     if not tracks_needing:
         return lib, 0
 
-    next_art_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
+    next_art_id = max(
+        max((t.artwork_id for t in lib.snapshot.tracks), default=0),
+        _max_artworkdb_image_id(root),
+    ) + 1
     cover_id_to_art: dict[str, int] = {}
     artwork_assets: list[ArtworkAsset] = []
     updated = list(lib.snapshot.tracks)
@@ -492,7 +515,10 @@ def add_drop_tracks(
         profile.capabilities.database.music_directory_count, occupied
     )
     next_id = max((t.track_id for t in lib.snapshot.tracks), default=0) + 1
-    next_artwork_id = max((t.artwork_id for t in lib.snapshot.tracks), default=0) + 1
+    next_artwork_id = max(
+        max((t.artwork_id for t in lib.snapshot.tracks), default=0),
+        _max_artworkdb_image_id(root),
+    ) + 1
 
     new_tracks = list(lib.snapshot.tracks)
     media_list: list[PreparedMedia] = []
