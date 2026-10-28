@@ -273,8 +273,10 @@ def _nd_sig(song: dict) -> str:
 @cli.command()
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--eject", is_flag=True, default=False)
+@click.option("--no-drop", "skip_drop", is_flag=True, default=False,
+              help="Skip the drop folder (audiobooks, videos, notes).")
 @click.argument("serial", required=False)
-def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
+def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> None:
     """Sync an iPod: scrobble plays, add missing tracks, remove unwanted tracks."""
     from wheelhouse.config import load
     from wheelhouse.device import load_library, build_write_target
@@ -395,7 +397,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
 
     # ── Drop folder ───────────────────────────────────────────────────────
     drop_managed = state_mod.get_drop_managed(db, target.serial)
-    drop_scan = df_mod.scan(cfg.drop_folder) if cfg.drop_folder.exists() else []
+    drop_scan = [] if skip_drop else (df_mod.scan(cfg.drop_folder) if cfg.drop_folder.exists() else [])
     drop_by_path = {item.rel_path: item for item in drop_scan}
     # Items whose DB track was removed by an external sync need re-adding.
     current_locations = {t.metadata.location for t in lib.snapshot.tracks}
@@ -439,7 +441,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         click.echo(f"\nDownloading {len(songs_to_add)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[progress.description]{task.description}", min_width=62),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -483,7 +485,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         click.echo(f"\nUpdating {len(songs_to_update)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[progress.description]{task.description}", min_width=62),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -532,7 +534,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
         click.echo(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[progress.description]{task.description}", min_width=62),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -589,7 +591,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
     if tracks_no_art and managed:
         click.echo(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
         with Progress(
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[progress.description]{task.description}", min_width=62),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -613,9 +615,10 @@ def sync(serial: str | None, dry_run: bool, eject: bool) -> None:
             click.echo(f"  Updated {art_count} tracks.")
 
     # ── 5. Sync notes ────────────────────────────────────────────────────
-    notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
-    if notes_added or notes_removed:
-        click.echo(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
+    if not skip_drop:
+        notes_added, notes_removed = writer.sync_notes(target.root, cfg.drop_folder)
+        if notes_added or notes_removed:
+            click.echo(f"\nNotes: {notes_added} updated, {notes_removed} removed.")
 
     # ── 6. Finalise ───────────────────────────────────────────────────────
     # Backfill sigs for kept tracks that predate change-detection.
