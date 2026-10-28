@@ -1,7 +1,6 @@
 """Find mounted iPods, identify them, read DB and play counts."""
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -82,40 +81,21 @@ def _serial_fallback(root: Path) -> str:
 
 
 def _guid_from_mac_usb() -> bytes:
-    """Try to read a connected iPod's FireWire GUID from macOS USB device data.
+    """Read a connected iPod's FireWireGUID from the USB serial number string.
 
-    Only used as a fallback when SysInfo is absent (e.g. flash-modded devices).
-    Returns b"" on any failure.
+    Uses ioreg to read kUSBSerialNumberString, which holds the 16-hex-char
+    GUID on flash-modded iPods without SysInfo. Returns b"" on any failure.
     """
     try:
         out = subprocess.run(
-            ["system_profiler", "SPUSBDataType", "-json"],
+            ["ioreg", "-p", "IOUSB", "-x", "-n", "iPod"],
             capture_output=True, text=True, timeout=8,
         )
         if out.returncode != 0:
             return b""
-        data = json.loads(out.stdout)
-
-        def _walk(node):
-            if isinstance(node, list):
-                for item in node:
-                    yield from _walk(item)
-            elif isinstance(node, dict):
-                name = (node.get("_name") or "").lower()
-                serial = (node.get("serial_num") or "").strip()
-                if "ipod" in name and serial:
-                    yield serial
-                for v in node.values():
-                    yield from _walk(v)
-
-        for serial_str in _walk(data):
-            raw = serial_str.lower().removeprefix("0x")
-            try:
-                b = bytes.fromhex(raw.zfill(16))
-                if len(b) == 8:
-                    return b
-            except ValueError:
-                pass
+        m = re.search(r'"kUSBSerialNumberString"\s*=\s*"([0-9A-Fa-f]{16})"', out.stdout)
+        if m:
+            return bytes.fromhex(m.group(1))
     except Exception:
         pass
     return b""
