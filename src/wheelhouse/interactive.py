@@ -492,6 +492,58 @@ def _do_sync(
     return "done"
 
 
+def _do_verify(
+    target: MountedIPod,
+    ipod_cfg: IPodConfig,
+    nd: NavidromeClient,
+) -> None:
+    from wheelhouse import verify as verify_mod
+
+    db = state_mod.open_state()
+    adopted = state_mod.is_adopted(db, target.serial)
+    db.close()
+    if not adopted:
+        console.print("[yellow]iPod not adopted — nothing to verify.[/yellow]")
+        return
+
+    console.print("Fetching Navidrome library…", end=" ")
+    report = verify_mod.run(target, ipod_cfg, nd)
+    console.print("done\n")
+
+    console.print(
+        f"Managed: {report.managed_count} Navidrome tracks, "
+        f"{report.drop_managed_count} drop items\n"
+    )
+    console.print(f"  Missing audio files:   {len(report.missing_file)}")
+    console.print(f"  Not in iTunesDB:       {len(report.orphaned_db)}")
+    console.print(f"  Drop files missing:    {len(report.drop_missing)}")
+    console.print(f"  Stale metadata sigs:   {len(report.stale_sig)}")
+    console.print(f"  Gone from Navidrome:   {len(report.unknown_in_nd)}")
+
+    def _samples(items, fmt):
+        for sample in items[:5]:
+            console.print(f"    [dim]{fmt(sample)}[/dim]")
+        if len(items) > 5:
+            console.print(f"    [dim]… and {len(items) - 5} more[/dim]")
+
+    if report.missing_file:
+        console.print("\n  Missing audio files:")
+        _samples(report.missing_file, lambda s: f"{s[0]}  {s[1]}")
+    if report.orphaned_db:
+        console.print("\n  Not in iTunesDB:")
+        _samples(report.orphaned_db, lambda s: f"{s[0]}  tid={s[1]}")
+    if report.drop_missing:
+        console.print("\n  Drop files missing:")
+        _samples(report.drop_missing, lambda s: f"{s[0]}  {s[1]}")
+
+    if report.total_issues == 0:
+        console.print("\n[green]All checks passed.[/green]")
+    else:
+        console.print(
+            f"\n[yellow]{report.total_issues} issue(s) — run Sync to repair.[/yellow]"
+        )
+
+
 def _do_adopt(
     target: MountedIPod,
     ipod_cfg: IPodConfig,
@@ -601,7 +653,7 @@ def run() -> None:
             db.close()
             action = questionary.select(
                 f"{ipod_cfg.name} — what would you like to do?",
-                choices=["Sync", "Adopt", "Status", "Eject", "Back", "Quit"],
+                choices=["Sync", "Adopt", "Verify", "Status", "Eject", "Back", "Quit"],
                 default="Sync" if adopted else "Adopt",
             ).ask()
 
@@ -624,6 +676,10 @@ def run() -> None:
 
             if action == "Adopt":
                 _do_adopt(target, ipod_cfg, cfg, nd)
+                continue
+
+            if action == "Verify":
+                _do_verify(target, ipod_cfg, nd)
                 continue
 
             if action == "Sync":

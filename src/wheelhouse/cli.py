@@ -576,6 +576,85 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
 
 @cli.command()
 @click.argument("serial", required=False)
+def verify(serial: str | None) -> None:
+    """Report state/iPod drift: missing files, orphaned links, stale metadata."""
+    from wheelhouse import state as state_mod, verify as verify_mod
+    from wheelhouse.config import load
+    from wheelhouse.navidrome import NavidromeClient
+
+    cfg = load()
+    mounts = find_ipods()
+    if not mounts:
+        click.echo("No iPods found.", err=True)
+        raise SystemExit(1)
+
+    ipods = [identify(r) for r in mounts]
+    if serial:
+        target = next((i for i in ipods if i.serial == serial), None)
+        if target is None:
+            click.echo(f"No iPod with serial {serial} found.", err=True)
+            raise SystemExit(1)
+    elif len(ipods) == 1:
+        target = ipods[0]
+    else:
+        click.echo("Multiple iPods connected — specify a serial:", err=True)
+        for i in ipods:
+            click.echo(f"  {i.serial}  {i.display_name}", err=True)
+        raise SystemExit(1)
+
+    ipod_cfg = cfg.ipod_by_serial(target.serial)
+    if ipod_cfg is None:
+        click.echo(f"iPod {target.serial} not in config.", err=True)
+        raise SystemExit(1)
+
+    db = state_mod.open_state()
+    adopted = state_mod.is_adopted(db, target.serial)
+    db.close()
+    if not adopted:
+        click.echo("iPod not adopted — nothing to verify.", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"iPod:    {target.display_name} ({target.serial})")
+    click.echo("Fetching Navidrome library…", nl=False)
+    nd = NavidromeClient(cfg.navidrome.url, cfg.navidrome.user, cfg.navidrome.password())
+    report = verify_mod.run(target, ipod_cfg, nd)
+    click.echo(" done")
+
+    click.echo(
+        f"Managed: {report.managed_count} Navidrome tracks, "
+        f"{report.drop_managed_count} drop items\n"
+    )
+    click.echo(f"  Missing audio files:   {len(report.missing_file)}")
+    click.echo(f"  Not in iTunesDB:       {len(report.orphaned_db)}")
+    click.echo(f"  Drop files missing:    {len(report.drop_missing)}")
+    click.echo(f"  Stale metadata sigs:   {len(report.stale_sig)}")
+    click.echo(f"  Gone from Navidrome:   {len(report.unknown_in_nd)}")
+
+    def _samples(items, fmt):
+        for sample in items[:5]:
+            click.echo(f"    {fmt(sample)}")
+        if len(items) > 5:
+            click.echo(f"    … and {len(items) - 5} more")
+
+    if report.missing_file:
+        click.echo("\n  Missing audio files:")
+        _samples(report.missing_file, lambda s: f"{s[0]}  {s[1]}")
+    if report.orphaned_db:
+        click.echo("\n  Not in iTunesDB:")
+        _samples(report.orphaned_db, lambda s: f"{s[0]}  tid={s[1]}")
+    if report.drop_missing:
+        click.echo("\n  Drop files missing:")
+        _samples(report.drop_missing, lambda s: f"{s[0]}  {s[1]}")
+
+    if report.total_issues == 0:
+        click.echo("\nAll checks passed.")
+    else:
+        click.echo(f"\n{report.total_issues} issue(s) — run `wheelhouse sync` to repair.")
+        raise SystemExit(2)
+
+
+@cli.command()
+@click.argument("serial", required=False)
 def eject(serial: str | None) -> None:
     """Eject a connected iPod safely."""
     import subprocess
