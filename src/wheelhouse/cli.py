@@ -16,6 +16,7 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+from rich.table import Column
 
 from wheelhouse.device import MountedIPod, apply_config_overrides, find_ipods, identify
 
@@ -441,7 +442,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         click.echo(f"\nDownloading {len(songs_to_add)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -485,7 +486,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         click.echo(f"\nUpdating {len(songs_to_update)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -534,7 +535,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         click.echo(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),
@@ -591,7 +592,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     if tracks_no_art and managed:
         click.echo(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(),
             MofNCompleteColumn(),
             TaskProgressColumn(),

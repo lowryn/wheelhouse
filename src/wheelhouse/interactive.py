@@ -15,7 +15,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.rule import Rule
-from rich.table import Table
+from rich.table import Column, Table
 
 from wheelhouse import state as state_mod
 from wheelhouse import writer
@@ -296,7 +296,7 @@ def _do_sync(
         console.print(f"\nDownloading {len(songs_to_add)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
             transient=True,
         ) as prog:
@@ -335,7 +335,7 @@ def _do_sync(
         console.print(f"\nUpdating {len(songs_to_update)} tracks…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
             transient=True,
         ) as prog:
@@ -379,7 +379,7 @@ def _do_sync(
         console.print(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
             transient=True,
         ) as prog:
@@ -431,7 +431,7 @@ def _do_sync(
     if tracks_no_art and managed:
         console.print(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
         with Progress(
-            TextColumn("[progress.description]{task.description}", min_width=62),
+            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
             BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
             transient=True,
         ) as prog:
