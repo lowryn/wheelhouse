@@ -438,7 +438,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
                     db, target.serial, nd_id,
                     ipod_track_id=ipod_track.track_id,
                     ipod_path=ipod_path,
-                    play_count=managed[nd_id].play_count,
+                    play_count=ipod_track.play_count,  # fresh copy: baseline is its own count
                     match_method="sync",
                     adopted_at=update_ts,
                     source_sig=_nd_sig(desired_by_id[nd_id]),
