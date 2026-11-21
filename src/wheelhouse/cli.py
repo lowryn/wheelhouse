@@ -7,17 +7,9 @@ import time
 from pathlib import Path
 
 import click
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
-from rich.table import Column
 
 from wheelhouse.device import MountedIPod, apply_config_overrides, find_ipods, identify
+from wheelhouse.progress import item_progress
 
 logging.getLogger("iPodDB").setLevel(logging.ERROR)
 
@@ -361,14 +353,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         songs_to_add = [desired_by_id[nd_id] for nd_id in sorted(to_add_ids)]
         click.echo(f"\nDownloading {len(songs_to_add)} tracks…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Downloading", total=len(songs_to_add))
 
             def _progress(i: int, title: str) -> None:
@@ -405,14 +390,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         songs_to_update = [desired_by_id[nd_id] for nd_id in sorted(to_update_ids)]
         click.echo(f"\nUpdating {len(songs_to_update)} tracks…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Updating", total=len(songs_to_update))
 
             def _upd_progress(i: int, title: str) -> None:
@@ -454,14 +432,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     if drop_to_add:
         click.echo(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress("item") as prog:
             task = prog.add_task("Copying", total=len(drop_to_add))
 
             def _drop_prog(i: int, name: str) -> None:
@@ -518,14 +489,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
     if tracks_no_art and managed:
         click.echo(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Artwork", total=tracks_no_art)
 
             def _art_prog(i: int, title: str) -> None:

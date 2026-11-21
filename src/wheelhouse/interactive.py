@@ -6,16 +6,8 @@ import time
 
 import questionary
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
 from rich.rule import Rule
-from rich.table import Column, Table
+from rich.table import Table
 
 from wheelhouse import state as state_mod
 from wheelhouse import writer
@@ -24,6 +16,7 @@ from wheelhouse.state import nd_sig as _nd_sig
 from wheelhouse.config import Config, IPodConfig, append_ipod_to_config, load as load_config
 from wheelhouse.device import MountedIPod, apply_config_overrides, build_write_target, find_ipods, identify, load_library
 from wheelhouse.navidrome import NavidromeClient
+from wheelhouse.progress import item_progress
 
 console = Console()
 
@@ -300,11 +293,7 @@ def _do_sync(
         songs_to_add = [desired_by_id[nd_id] for nd_id in sorted(to_add_ids)]
         console.print(f"\nDownloading {len(songs_to_add)} tracks…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Downloading", total=len(songs_to_add))
 
             def _progress(i: int, title: str) -> None:
@@ -339,11 +328,7 @@ def _do_sync(
         songs_to_update = [desired_by_id[nd_id] for nd_id in sorted(to_update_ids)]
         console.print(f"\nUpdating {len(songs_to_update)} tracks…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Updating", total=len(songs_to_update))
 
             def _upd_progress(i: int, title: str) -> None:
@@ -383,11 +368,7 @@ def _do_sync(
     if drop_to_add:
         console.print(f"\nAdding {len(drop_to_add)} tracks from drop folder…")
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress("item") as prog:
             task = prog.add_task("Copying", total=len(drop_to_add))
 
             def _drop_prog(i: int, name: str) -> None:
@@ -442,11 +423,7 @@ def _do_sync(
     tracks_no_art = sum(1 for t in lib.snapshot.tracks if t.artwork_id == 0)
     if tracks_no_art and managed:
         console.print(f"\nUpdating artwork ({tracks_no_art} tracks without)…")
-        with Progress(
-            TextColumn("[progress.description]{task.description}", table_column=Column(min_width=62)),
-            BarColumn(), MofNCompleteColumn(), TaskProgressColumn(), TimeRemainingColumn(),
-            transient=True,
-        ) as prog:
+        with item_progress() as prog:
             task = prog.add_task("Artwork", total=tracks_no_art)
 
             def _art_prog(i: int, title: str) -> None:
