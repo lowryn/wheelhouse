@@ -272,9 +272,15 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     desired_by_id  = {s["id"]: s for s in desired_songs}
     desired_nd_ids = set(desired_by_id.keys())
     managed_nd_ids = set(managed.keys())
+    # Managed tracks missing from the iPod DB (restore, external wipe) need re-adding.
+    missing_nd_ids = {
+        nd_id for nd_id in managed_nd_ids
+        if managed[nd_id].ipod_track_id not in ipod_by_tid
+    }
+    present_nd_ids = managed_nd_ids - missing_nd_ids
 
-    # Tracks to download: desired but not yet managed
-    to_add_ids = desired_nd_ids - managed_nd_ids
+    # Tracks to download: desired but not on the iPod
+    to_add_ids = desired_nd_ids - present_nd_ids
     unsupported = {
         nd_id for nd_id in to_add_ids
         if (desired_by_id[nd_id].get("suffix") or "").lower() in writer.SKIP_FORMATS
@@ -282,7 +288,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
     to_add_ids -= unsupported
 
     # Tracks already on iPod that are still desired (will be kept)
-    keep_nd_ids = managed_nd_ids & desired_nd_ids
+    keep_nd_ids = present_nd_ids & desired_nd_ids
     all_current_tids = {t.track_id for t in lib.snapshot.tracks}
     managed_to_drop = managed_nd_ids - desired_nd_ids
 
@@ -314,7 +320,7 @@ def sync(serial: str | None, dry_run: bool, eject: bool, skip_drop: bool) -> Non
         if p in drop_by_path and drop_managed[p].ipod_track_id > 0 and p not in drop_stale
     )
 
-    tracks_to_remove = len(all_current_tids) - len(keep_tids)
+    tracks_to_remove = len(all_current_tids - keep_tids)
     plan_has_work = bool(
         to_add_ids or to_update_ids or tracks_to_remove or drop_to_add or drop_to_remove
     )
