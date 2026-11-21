@@ -49,9 +49,11 @@ python -c "import keyring; keyring.set_password('wheelhouse', 'you@example.com',
 ```
 
 For flash-modded iPods with an empty SysInfo (no serial in firmware), the
-serial is auto-derived from the volume name as `__vol__<VolumeName>`. Add
+serial is auto-derived from the USB GUID (`ioreg`'s `kUSBSerialNumberString`)
+as `__guid__<GUID>`, so it survives restores and volume renames. Only if no GUID
+can be read does it fall back to the volume name as `__vol__<VolumeName>`. Add
 `model: MB565` (or whichever model number) and `guid: "000A..."` (auto-detected
-on registration from `ioreg`'s `kUSBSerialNumberString`).
+on registration).
 
 ## Interactive mode
 

@@ -1,6 +1,7 @@
 """Find mounted iPods, identify them, read DB and play counts."""
 from __future__ import annotations
 
+import plistlib
 import re
 import shutil
 import subprocess
@@ -80,27 +81,48 @@ def _serial_fallback(root: Path) -> str:
     return ""
 
 
-def _guid_from_mac_usb() -> bytes:
-    """Read a connected iPod's FireWireGUID from the USB serial number string.
+def _bsd_name(root: Path) -> str:
+    """Return the BSD device backing a mounted volume, e.g. "disk4s1"."""
+    try:
+        out = subprocess.run(
+            ["diskutil", "info", "-plist", str(root)],
+            capture_output=True, timeout=8,
+        )
+        if out.returncode != 0:
+            return ""
+        return plistlib.loads(out.stdout).get("DeviceIdentifier", "")
+    except Exception:
+        return ""
 
-    Uses ioreg to read kUSBSerialNumberString, which holds the 16-hex-char
-    GUID on flash-modded iPods without SysInfo. Returns b"" when zero or more
-    than one iPod USB device is present — in the multi-iPod case we cannot
-    attribute a specific GUID without disk-to-USB tracing, and would rather
-    prompt the user than guess wrong.
+
+def _guid_from_mac_usb(root: Path) -> bytes:
+    """Read the FireWireGUID of the iPod mounted at `root` from its USB serial.
+
+    Each iPod USB device's ioreg subtree holds its kUSBSerialNumberString (the
+    16-hex-char GUID) and the BSD names of the disks beneath it, so the volume's
+    disk ties it to exactly one device even with several iPods connected. If the
+    volume's disk can't be resolved, a lone iPod is accepted; otherwise b"" —
+    we would rather prompt the user than guess wrong.
     """
     try:
         out = subprocess.run(
-            ["ioreg", "-p", "IOUSB", "-x", "-n", "iPod"],
+            ["ioreg", "-r", "-n", "iPod", "-l", "-w0"],
             capture_output=True, text=True, timeout=8,
         )
         if out.returncode != 0:
             return b""
-        guids = re.findall(
-            r'"kUSBSerialNumberString"\s*=\s*"([0-9A-Fa-f]{16})"', out.stdout
-        )
-        if len(guids) == 1:
-            return bytes.fromhex(guids[0])
+        devices: list[tuple[str, set[str]]] = []
+        for block in re.split(r"^\+-o iPod@", out.stdout, flags=re.MULTILINE)[1:]:
+            m = re.search(r'"kUSBSerialNumberString"\s*=\s*"([0-9A-Fa-f]{16})"', block)
+            if m:
+                disks = set(re.findall(r'"BSD Name"\s*=\s*"(disk[0-9s]+)"', block))
+                devices.append((m.group(1), disks))
+        bsd = _bsd_name(root)
+        if bsd:
+            matches = [guid for guid, disks in devices if bsd in disks]
+            return bytes.fromhex(matches[0]) if len(matches) == 1 else b""
+        if len(devices) == 1:
+            return bytes.fromhex(devices[0][0])
     except Exception:
         pass
     return b""
@@ -135,13 +157,15 @@ def identify(root: Path) -> MountedIPod:
     else:
         display_name = "Unknown iPod"
 
-    serial = _best_value(evidence.product_serials) or _serial_fallback(root)
-    if not serial:
-        serial = f"__vol__{root.name}"
-
     guid = _guid_bytes(evidence)
     if not guid:
-        guid = _guid_from_mac_usb()
+        guid = _guid_from_mac_usb(root)
+
+    # No firmware serial (flash mod / wiped SysInfo): key on the GUID, which
+    # survives restores and renames; the volume name is a last resort.
+    serial = _best_value(evidence.product_serials) or _serial_fallback(root)
+    if not serial:
+        serial = f"__guid__{guid.hex().upper()}" if guid else f"__vol__{root.name}"
 
     db_path = root / "iPod_Control/iTunes/iTunesDB"
     db_ok = False

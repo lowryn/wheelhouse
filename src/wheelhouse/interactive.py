@@ -30,11 +30,12 @@ console = Console()
 
 def _register_unknown_ipod(ipod: MountedIPod) -> bool:
     """Prompt for name + music mode (+ model/GUID for flash-modded devices) and write to config."""
-    is_flash_mod = ipod.serial.startswith("__vol__")
+    is_flash_mod = ipod.serial.startswith(("__guid__", "__vol__"))
     console.print(f"\n[yellow]Unknown iPod:[/yellow] {ipod.display_name}")
     if is_flash_mod:
+        basis = "USB GUID" if ipod.serial.startswith("__guid__") else "volume name"
         console.print(
-            f"[dim]No SysInfo found — identified by volume name as [bold]{ipod.serial}[/bold][/dim]"
+            f"[dim]No SysInfo found — identified by {basis} as [bold]{ipod.serial}[/bold][/dim]"
         )
 
     name = questionary.text("Name for this iPod:").ask()
